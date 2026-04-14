@@ -6,16 +6,22 @@
   <title>Speech Emotion Classifier</title>
   <style>
     :root {
-      --bg: #101010;
-      --panel: #171717;
-      --panel-alt: #121212;
-      --border: #313131;
-      --border-strong: #4a4a4a;
-      --text: #b8b8b8;
-      --text-bright: #f3f3f3;
-      --text-dim: #7a7a7a;
-      --accent: #c59d3d;
-      --danger: #d06363;
+      --bg: #ece8df;
+      --panel: #f7f4ec;
+      --panel-alt: #ebe6db;
+      --border: #c5bfb4;
+      --border-strong: #9f988c;
+      --text: #4a463f;
+      --text-bright: #1c1a17;
+      --text-dim: #726c63;
+      --accent: #907127;
+      --danger: #9d4f4f;
+      --button-bg: #e0dbcf;
+      --button-hover: #d6d0c3;
+      --button-text: #1c1a17;
+      --primary-text: #f7f4ec;
+      --danger-border: #bfaaaa;
+      --danger-hover: rgba(157, 79, 79, 0.08);
     }
     body {
       background: var(--bg);
@@ -77,8 +83,8 @@
       margin-bottom: 12px;
     }
     button, input[type="file"]::file-selector-button {
-      background: #202020;
-      color: var(--text-bright);
+      background: var(--button-bg);
+      color: var(--button-text);
       border: 1px solid var(--border-strong);
       padding: 9px 12px;
       font-size: 12px;
@@ -87,16 +93,16 @@
       font-family: inherit;
       letter-spacing: 0.04em;
     }
-    button:hover:not(:disabled), input[type="file"]::file-selector-button:hover { background: #282828; }
+    button:hover:not(:disabled), input[type="file"]::file-selector-button:hover { background: var(--button-hover); }
     button.primary {
       background: var(--accent);
       border-color: var(--accent);
-      color: #111;
+      color: var(--primary-text);
       font-weight: 700;
     }
     button.primary:hover:not(:disabled) { background: #d3af59; }
-    button.danger { color: var(--danger); border-color: #784545; background: transparent; }
-    button.danger:hover:not(:disabled) { background: rgba(208, 99, 99, 0.08); }
+    button.danger { color: var(--danger); border-color: var(--danger-border); background: transparent; }
+    button.danger:hover:not(:disabled) { background: var(--danger-hover); }
     button:disabled { opacity: 0.4; cursor: not-allowed; }
     input[type="file"] {
       width: 100%;
@@ -184,7 +190,7 @@
       font-size: 12px;
       margin-bottom: 4px;
     }
-    .prob-bar { background: #262626; height: 6px; width: 100%; }
+    .prob-bar { background: #d4cec2; height: 6px; width: 100%; }
     .prob-fill { background: var(--accent); height: 100%; width: 0%; transition: width 0.3s ease; }
 
     @media (max-width: 600px) {
