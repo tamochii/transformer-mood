@@ -1,0 +1,9 @@
+numpy==2.4.4
+scikit-learn==1.8.0
+matplotlib==3.10.8
+librosa==0.11.0
+soundfile==0.13.1
+fastapi==0.135.3
+uvicorn==0.44.0
+python-multipart==0.0.26
+Jinja2==3.1.6

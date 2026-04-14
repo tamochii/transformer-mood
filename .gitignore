@@ -1,0 +1,16 @@
+.venv/
+__pycache__/
+.playwright-mcp/
+.pytest_cache/
+.mypy_cache/
+*.pyc
+*.pyo
+*.log
+
+# Local dataset cache
+data/ravdess/
+
+# Legacy root-level artifacts
+/best_model.pth
+/training_curves.png
+/confusion_matrix.png
