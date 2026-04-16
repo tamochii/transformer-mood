@@ -1,27 +1,31 @@
 # Transformer Mood
 
-基于 Transformer 的语音情绪识别项目，包含训练脚本、命令行推理，以及一个可直接上传音频或使用麦克风录音的本地 WebUI。
+[中文](README.zh.md) | English
+
+Transformer-based speech emotion recognition project with training scripts, CLI inference, and a local WebUI that supports both file uploads and browser microphone recording.
 
 ## Features
 
-- RAVDESS 数据集预处理与训练
-- Transformer Encoder 语音情绪分类模型
-- 命令行单文件推理
+- RAVDESS dataset preprocessing and training
+- Transformer Encoder speech emotion classification model
+- Single-file CLI inference
 - FastAPI WebUI
-- 浏览器录音、音频上传、情绪概率展示
+- Browser microphone recording, audio uploads, and probability display
 
 ## Repository Layout
 
 ```text
-speech_emotion_classifier.py   # 训练与 CLI 推理入口
-app_fastapi.py                 # FastAPI WebUI 服务
-templates/index.html           # WebUI 页面模板
-output/                        # 已生成的模型与可视化结果
-data/README.md                 # 数据集放置说明
-transformer-md/                # 参考资料
-requirements.txt               # 非 PyTorch Python 依赖
-requirements-webui.txt         # WebUI 最小额外依赖
-ENVIRONMENT.md                 # 环境与运行说明
+README.zh.md                    # Chinese project README
+speech_emotion_classifier.py   # Training and CLI inference entry point
+app_fastapi.py                 # FastAPI WebUI server
+templates/index.html           # WebUI template
+output/                        # Generated models and visual artifacts
+data/README.md                 # Dataset placement notes
+data/README.zh.md              # Chinese dataset placement notes
+transformer-md/                # Reference materials
+requirements.txt               # Non-PyTorch Python dependencies
+requirements-webui.txt         # Minimal extra dependencies for the WebUI
+ENVIRONMENT.md                 # Environment and runtime notes
 ```
 
 ## Quick Start
@@ -31,14 +35,14 @@ python3 -m venv .venv
 source .venv/bin/activate
 ```
 
-先安装 PyTorch 与 torchaudio，再安装其他依赖：
+Install `torch` and `torchaudio` first, then install the remaining dependencies:
 
 ```bash
 pip install torch torchaudio
 pip install -r requirements.txt
 ```
 
-安装 `ffmpeg`：
+Install `ffmpeg`:
 
 ```bash
 sudo apt update
@@ -47,13 +51,13 @@ sudo apt install -y ffmpeg
 
 ## Dataset
 
-本仓库不提交 RAVDESS 数据集本体。请手动下载后放到：
+This repository does not include the RAVDESS dataset itself. Download it manually and place it under:
 
 ```text
 data/ravdess/
 ```
 
-详细说明见 `data/README.md`。
+See `data/README.md` for details.
 
 ## Training
 
@@ -73,20 +77,20 @@ python speech_emotion_classifier.py --mode predict --audio path/to/example.wav
 python -m uvicorn app_fastapi:app --host 127.0.0.1 --port 8000
 ```
 
-打开：
+Open:
 
 ```text
 http://127.0.0.1:8000
 ```
 
-WebUI 支持：
+The WebUI supports:
 
-- 上传本地音频文件
-- 浏览器麦克风录音
-- 展示预测情绪、置信度和完整概率分布
+- Uploading local audio files
+- Recording from the browser microphone
+- Displaying predicted emotion, confidence, and full probability distribution
 
 ## Notes
 
-- `data/ravdess/` 已加入 `.gitignore`，避免把原始数据集推到仓库
-- 根目录旧的本地模型与图片产物已忽略，当前正式输出集中在 `output/`
-- `output/` 中的文件可作为当前项目结果一并上传，或者按你的需要重新生成
+- `data/ravdess/` is in `.gitignore` so the raw dataset will not be committed accidentally
+- Legacy root-level model and image artifacts are ignored; the current expected outputs live in `output/`
+- Files in `output/` can be kept as project artifacts or regenerated as needed
