@@ -58,17 +58,19 @@ data/ravdess/Actor_02/*.wav
 data/ravdess/Actor_24/*.wav
 ```
 
+If you want to run CLI prediction or enable WebUI inference, place a checkpoint at `output/best_model.pth`, or export `EMOTION_MODEL_PATH` to point at your model file.
+
 ## 6. Verify the CLI
 
 ```bash
-python speech_emotion_classifier.py --help
-python speech_emotion_classifier.py --mode predict --audio data/ravdess/Actor_01/03-01-08-02-01-01-01.wav
+PYTHONPATH=src python -m transformer_mood.speech_emotion_classifier --help
+PYTHONPATH=src python -m transformer_mood.speech_emotion_classifier --mode predict --audio data/ravdess/Actor_01/03-01-08-02-01-01-01.wav
 ```
 
 ## 7. Run the WebUI
 
 ```bash
-python -m uvicorn app_fastapi:app --host 127.0.0.1 --port 8000
+PYTHONPATH=src python -m uvicorn transformer_mood.main:app --host 127.0.0.1 --port 8000
 ```
 
 Then open:

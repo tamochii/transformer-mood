@@ -15,11 +15,17 @@ Transformer-based speech emotion recognition project with training scripts, CLI 
 ## Repository Layout
 
 ```text
+src/
+  transformer_mood/
+    __init__.py
+    main.py
+    speech_emotion_classifier.py
+    templates/
+      index.html
+    static/
+      .gitkeep
 README.zh.md                    # Chinese project README
-speech_emotion_classifier.py   # Training and CLI inference entry point
-app_fastapi.py                 # FastAPI WebUI server
-templates/index.html           # WebUI template
-output/                        # Generated models and visual artifacts
+output/                        # Runtime output directory (ignored except .gitkeep)
 data/README.md                 # Dataset placement notes
 data/README.zh.md              # Chinese dataset placement notes
 transformer-md/                # Reference materials
@@ -62,19 +68,19 @@ See `data/README.md` for details.
 ## Training
 
 ```bash
-python speech_emotion_classifier.py --mode train
+PYTHONPATH=src python -m transformer_mood.speech_emotion_classifier --mode train
 ```
 
 ## CLI Prediction
 
 ```bash
-python speech_emotion_classifier.py --mode predict --audio path/to/example.wav
+PYTHONPATH=src python -m transformer_mood.speech_emotion_classifier --mode predict --audio path/to/example.wav
 ```
 
 ## WebUI
 
 ```bash
-python -m uvicorn app_fastapi:app --host 127.0.0.1 --port 8000
+PYTHONPATH=src python -m uvicorn transformer_mood.main:app --host 127.0.0.1 --port 8000
 ```
 
 Open:
@@ -89,8 +95,10 @@ The WebUI supports:
 - Recording from the browser microphone
 - Displaying predicted emotion, confidence, and full probability distribution
 
+Prediction requires a local checkpoint at `output/best_model.pth`, or an explicit `EMOTION_MODEL_PATH` environment variable.
+
 ## Notes
 
 - `data/ravdess/` is in `.gitignore` so the raw dataset will not be committed accidentally
 - Legacy root-level model and image artifacts are ignored; the current expected outputs live in `output/`
-- Files in `output/` can be kept as project artifacts or regenerated as needed
+- `output/` is kept as a directory boundary, but generated model files and figures are ignored for the public repository
