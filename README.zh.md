@@ -42,7 +42,6 @@ data/README.zh.md              # 中文数据集放置说明
 transformer-md/                # 参考资料
 requirements.txt               # 非 PyTorch Python 依赖
 requirements-webui.txt         # WebUI 最小额外依赖
-ENVIRONMENT.md                 # 环境与运行说明
 ```
 
 ## 快速开始

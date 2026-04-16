@@ -42,7 +42,6 @@ data/README.zh.md              # Chinese dataset placement notes
 transformer-md/                # Reference materials
 requirements.txt               # Non-PyTorch Python dependencies
 requirements-webui.txt         # Minimal extra dependencies for the WebUI
-ENVIRONMENT.md                 # Environment and runtime notes
 ```
 
 ## Quick Start
