@@ -9,6 +9,7 @@
 </p>
 
 <p align="center">
+  <img alt="License" src="https://img.shields.io/badge/License-MIT-blue.svg">
   <img alt="Python" src="https://img.shields.io/badge/Python-3.x-3776AB.svg">
   <img alt="Model" src="https://img.shields.io/badge/Model-Transformer-7A3FFF.svg">
   <img alt="WebUI" src="https://img.shields.io/badge/WebUI-FastAPI-009688.svg">
@@ -109,6 +110,7 @@ WebUI 支持：
 
 ## 说明
 
+- 本项目基于 MIT License 发布，详见 `LICENSE`。
 - `data/ravdess/` 已加入 `.gitignore`，避免把原始数据集推到仓库
 - 根目录旧的本地模型与图片产物已忽略，当前正式输出集中在 `output/`
 - `output/` 目录仅保留结构，生成的模型和训练图不会提交到公开仓库

@@ -9,6 +9,7 @@
 </p>
 
 <p align="center">
+  <img alt="License" src="https://img.shields.io/badge/License-MIT-blue.svg">
   <img alt="Python" src="https://img.shields.io/badge/Python-3.x-3776AB.svg">
   <img alt="Model" src="https://img.shields.io/badge/Model-Transformer-7A3FFF.svg">
   <img alt="WebUI" src="https://img.shields.io/badge/WebUI-FastAPI-009688.svg">
@@ -109,6 +110,7 @@ Prediction requires a local checkpoint at `output/best_model.pth`, or an explici
 
 ## Notes
 
+- This project is released under the MIT License. See `LICENSE` for details.
 - `data/ravdess/` is in `.gitignore` so the raw dataset will not be committed accidentally
 - Legacy root-level model and image artifacts are ignored; the current expected outputs live in `output/`
 - `output/` is kept as a directory boundary, but generated model files and figures are ignored for the public repository
