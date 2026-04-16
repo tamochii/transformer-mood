@@ -66,6 +66,13 @@ sudo apt update
 sudo apt install -y ffmpeg
 ```
 
+The recommended project entrypoints are:
+
+```bash
+python run.py doctor
+python run.py
+```
+
 ## Dataset
 
 This repository does not include the RAVDESS dataset itself. Download it manually and place it under:
@@ -79,19 +86,20 @@ See `data/README.md` for details.
 ## Training
 
 ```bash
-PYTHONPATH=src python -m transformer_mood.speech_emotion_classifier --mode train
+python run.py train
 ```
 
 ## CLI Prediction
 
 ```bash
-PYTHONPATH=src python -m transformer_mood.speech_emotion_classifier --mode predict --audio path/to/example.wav
+python run.py predict --audio path/to/example.wav
 ```
 
 ## WebUI
 
 ```bash
-PYTHONPATH=src python -m uvicorn transformer_mood.main:app --host 127.0.0.1 --port 8000
+python run.py
+python run.py webui --host 127.0.0.1 --port 8000
 ```
 
 Open:

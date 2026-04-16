@@ -66,6 +66,13 @@ sudo apt update
 sudo apt install -y ffmpeg
 ```
 
+推荐直接通过启动器进入项目：
+
+```bash
+python run.py doctor
+python run.py
+```
+
 ## 数据集
 
 本仓库不提交 RAVDESS 数据集本体。请手动下载后放到：
@@ -79,19 +86,20 @@ data/ravdess/
 ## 训练
 
 ```bash
-PYTHONPATH=src python -m transformer_mood.speech_emotion_classifier --mode train
+python run.py train
 ```
 
 ## CLI 推理
 
 ```bash
-PYTHONPATH=src python -m transformer_mood.speech_emotion_classifier --mode predict --audio path/to/example.wav
+python run.py predict --audio path/to/example.wav
 ```
 
 ## WebUI
 
 ```bash
-PYTHONPATH=src python -m uvicorn transformer_mood.main:app --host 127.0.0.1 --port 8000
+python run.py
+python run.py webui --host 127.0.0.1 --port 8000
 ```
 
 打开：
