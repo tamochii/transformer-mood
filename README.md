@@ -1,8 +1,19 @@
-# Transformer Mood
+<p align="right">
+  English | <a href="./README.zh.md">简体中文</a>
+</p>
 
-[中文](README.zh.md) | English
+<h1 align="center">Transformer Mood</h1>
 
-Transformer-based speech emotion recognition project with training scripts, CLI inference, and a local WebUI that supports both file uploads and browser microphone recording.
+<p align="center">
+  A local-first speech emotion recognition toolkit with training, CLI inference, and a FastAPI WebUI.
+</p>
+
+<p align="center">
+  <img alt="Python" src="https://img.shields.io/badge/Python-3.x-3776AB.svg">
+  <img alt="Model" src="https://img.shields.io/badge/Model-Transformer-7A3FFF.svg">
+  <img alt="WebUI" src="https://img.shields.io/badge/WebUI-FastAPI-009688.svg">
+  <img alt="Dataset" src="https://img.shields.io/badge/Dataset-RAVDESS-EA4C89.svg">
+</p>
 
 ## Features
 

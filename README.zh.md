@@ -1,8 +1,19 @@
-# Transformer Mood
+<p align="right">
+  <a href="./README.md">English</a> | 简体中文
+</p>
 
-中文 | [English](README.md)
+<h1 align="center">Transformer Mood</h1>
 
-基于 Transformer 的语音情绪识别项目，包含训练脚本、命令行推理，以及一个支持本地音频上传和浏览器麦克风录音的本地 WebUI。
+<p align="center">
+  一个本地优先的语音情绪识别项目，包含训练、命令行推理和 FastAPI WebUI。
+</p>
+
+<p align="center">
+  <img alt="Python" src="https://img.shields.io/badge/Python-3.x-3776AB.svg">
+  <img alt="Model" src="https://img.shields.io/badge/Model-Transformer-7A3FFF.svg">
+  <img alt="WebUI" src="https://img.shields.io/badge/WebUI-FastAPI-009688.svg">
+  <img alt="Dataset" src="https://img.shields.io/badge/Dataset-RAVDESS-EA4C89.svg">
+</p>
 
 ## 功能
 
