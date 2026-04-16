@@ -15,11 +15,17 @@
 ## 仓库结构
 
 ```text
+src/
+  transformer_mood/
+    __init__.py
+    main.py
+    speech_emotion_classifier.py
+    templates/
+      index.html
+    static/
+      .gitkeep
 README.zh.md                    # 中文项目说明
-speech_emotion_classifier.py   # 训练与 CLI 推理入口
-app_fastapi.py                 # FastAPI WebUI 服务
-templates/index.html           # WebUI 页面模板
-output/                        # 已生成的模型与可视化结果
+output/                        # 运行时输出目录（除 .gitkeep 外均忽略）
 data/README.md                 # 数据集放置说明
 data/README.zh.md              # 中文数据集放置说明
 transformer-md/                # 参考资料
@@ -62,19 +68,19 @@ data/ravdess/
 ## 训练
 
 ```bash
-python speech_emotion_classifier.py --mode train
+PYTHONPATH=src python -m transformer_mood.speech_emotion_classifier --mode train
 ```
 
 ## CLI 推理
 
 ```bash
-python speech_emotion_classifier.py --mode predict --audio path/to/example.wav
+PYTHONPATH=src python -m transformer_mood.speech_emotion_classifier --mode predict --audio path/to/example.wav
 ```
 
 ## WebUI
 
 ```bash
-python -m uvicorn app_fastapi:app --host 127.0.0.1 --port 8000
+PYTHONPATH=src python -m uvicorn transformer_mood.main:app --host 127.0.0.1 --port 8000
 ```
 
 打开：
@@ -89,8 +95,10 @@ WebUI 支持：
 - 浏览器麦克风录音
 - 展示预测情绪、置信度和完整概率分布
 
+预测功能需要本地模型文件 `output/best_model.pth`，或通过环境变量 `EMOTION_MODEL_PATH` 显式指定模型路径。
+
 ## 说明
 
 - `data/ravdess/` 已加入 `.gitignore`，避免把原始数据集推到仓库
 - 根目录旧的本地模型与图片产物已忽略，当前正式输出集中在 `output/`
-- `output/` 中的文件可作为当前项目结果一并上传，或者按你的需要重新生成
+- `output/` 目录仅保留结构，生成的模型和训练图不会提交到公开仓库

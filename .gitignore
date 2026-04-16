@@ -1,4 +1,5 @@
 .venv/
+.worktrees/
 __pycache__/
 .playwright-mcp/
 .pytest_cache/
@@ -6,6 +7,9 @@ __pycache__/
 *.pyc
 *.pyo
 *.log
+.DS_Store
+.idea/
+.vscode/
 
 # Local dataset cache
 data/ravdess/
@@ -14,3 +18,7 @@ data/ravdess/
 /best_model.pth
 /training_curves.png
 /confusion_matrix.png
+
+# Generated training outputs
+output/*
+!output/.gitkeep
