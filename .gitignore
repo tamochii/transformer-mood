@@ -13,6 +13,7 @@ __pycache__/
 
 # Local dataset cache
 data/ravdess/
+data/cremad/
 
 # Legacy root-level artifacts
 /best_model.pth

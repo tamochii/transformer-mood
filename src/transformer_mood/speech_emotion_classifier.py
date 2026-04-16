@@ -68,6 +68,7 @@ WEIGHT_DECAY = 1e-4
 PACKAGE_DIR = Path(__file__).resolve().parent
 PROJECT_ROOT = PACKAGE_DIR.parents[1]
 DATA_DIR = str(PROJECT_ROOT / "data" / "ravdess")
+CREMA_DATA_DIR = str(PROJECT_ROOT / "data" / "cremad" / "AudioWAV")
 OUTPUT_DIR = str(PROJECT_ROOT / "output")
 
 # RAVDESS 情感标签映射（文件名第3段）
@@ -81,6 +82,17 @@ RAVDESS_EMOTIONS = {
     "06": "fearful",
     "07": "disgust",
     "08": "surprised",
+}
+
+# CREMA-D 情感标签映射（文件名第3段）
+# 情感代码: ANG=angry, DIS=disgust, FEA=fearful, HAP=happy, NEU=neutral, SAD=sad
+CREMA_EMOTIONS = {
+    "ANG": "angry",
+    "DIS": "disgust",
+    "FEA": "fearful",
+    "HAP": "happy",
+    "NEU": "neutral",
+    "SAD": "sad",
 }
 
 # 使用全部 8 类情感
@@ -127,6 +139,28 @@ def parse_ravdess_filename(filepath: str) -> dict:
         "repetition": parts[5],    # 01 or 02
         "actor": parts[6],         # 01-24
         "emotion_name": RAVDESS_EMOTIONS.get(parts[2], "unknown"),
+    }
+
+
+def parse_cremad_filename(filepath: str) -> dict:
+    """
+    解析 CREMA-D 文件名，提取元数据。
+    文件名格式: {speaker}_{sentence}_{emotion}_{intensity}.wav
+
+    Args:
+        filepath: wav 文件路径
+    Returns:
+        dict: 包含 speaker, emotion, intensity, emotion_name 等信息
+    """
+    filename = os.path.basename(filepath)
+    parts = filename.replace(".wav", "").split("_")
+    emotion_code = parts[2]
+    return {
+        "speaker": parts[0],          # 1001-1091
+        "sentence": parts[1],         # DFA, IEO, IOM, etc.
+        "emotion": emotion_code,      # ANG, DIS, FEA, HAP, NEU, SAD
+        "intensity": parts[3],        # XX (no intensity), HI, LO, MD
+        "emotion_name": CREMA_EMOTIONS.get(emotion_code, "unknown"),
     }
 
 
@@ -205,8 +239,36 @@ def scan_ravdess_dataset(data_dir: str) -> list:
                     "filepath": filepath,
                     "emotion_name": emotion_name,
                     "emotion_idx": EMOTION_TO_IDX[emotion_name],
-                    "actor": int(meta["actor"]),
+                    "speaker": int(meta["actor"]),
                 })
+    return samples
+
+
+def scan_cremad_dataset(data_dir: str) -> list:
+    """
+    扫描 CREMA-D 数据集，收集所有音频文件路径和标签。
+
+    Args:
+        data_dir: CREMA-D AudioWAV 目录
+    Returns:
+        list of dict: 每条包含 filepath, emotion_name, emotion_idx, speaker
+    """
+    samples = []
+    if not os.path.isdir(data_dir):
+        return samples
+    for wav_file in sorted(os.listdir(data_dir)):
+        if not wav_file.endswith(".wav"):
+            continue
+        filepath = os.path.join(data_dir, wav_file)
+        meta = parse_cremad_filename(filepath)
+        emotion_name = meta["emotion_name"]
+        if emotion_name in EMOTION_TO_IDX:
+            samples.append({
+                "filepath": filepath,
+                "emotion_name": emotion_name,
+                "emotion_idx": EMOTION_TO_IDX[emotion_name],
+                "speaker": int(meta["speaker"]),
+            })
     return samples
 
 
@@ -688,20 +750,21 @@ def plot_emotion_distribution(samples, save_path):
 
 def split_by_actor(samples: list, test_actors: list = None, val_actors: list = None):
     """
-    按演员划分数据集，避免数据泄露。
+    按说话者划分数据集，避免数据泄露。
 
-    默认: Actor 21-24 作为测试集, Actor 19-20 作为验证集, 其余训练。
+    默认: Speaker 21-24 作为测试集, Speaker 19-20 作为验证集, 其余训练。
+    注意：样本中应包含 "speaker" 键。
     """
     if test_actors is None:
-        test_actors = [21, 22, 23, 24]       # 4 actors for test
+        test_actors = [21, 22, 23, 24]       # 4 speakers for test
     if val_actors is None:
-        val_actors = [19, 20]                 # 2 actors for validation
+        val_actors = [19, 20]                 # 2 speakers for validation
 
     train_samples, val_samples, test_samples = [], [], []
     for s in samples:
-        if s["actor"] in test_actors:
+        if s["speaker"] in test_actors:
             test_samples.append(s)
-        elif s["actor"] in val_actors:
+        elif s["speaker"] in val_actors:
             val_samples.append(s)
         else:
             train_samples.append(s)
@@ -761,7 +824,7 @@ def main():
 
     # ------ 训练模式 ------
     print("=" * 60)
-    print("  基于 Transformer 的语音情感特征分析 (RAVDESS)")
+    print("  基于 Transformer 的语音情感特征分析 (RAVDESS + CREMA-D)")
     print("=" * 60)
 
     # === 第一阶段: 数据准备 ===
@@ -773,16 +836,60 @@ def main():
         print("请先下载 RAVDESS 数据集并解压到 data/ravdess/ 目录")
         sys.exit(1)
 
-    samples = scan_ravdess_dataset(DATA_DIR)
-    print(f"  扫描到 {len(samples)} 条语音样本")
+    # 加载 RAVDESS 数据集
+    ravdess_samples = scan_ravdess_dataset(DATA_DIR)
+    print(f"  RAVDESS 扫描到 {len(ravdess_samples)} 条语音样本")
+    
+    # 加载 CREMA-D 数据集（如果存在）
+    cremad_samples = []
+    if os.path.isdir(CREMA_DATA_DIR):
+        cremad_samples = scan_cremad_dataset(CREMA_DATA_DIR)
+        print(f"  CREMA-D 扫描到 {len(cremad_samples)} 条语音样本")
+    else:
+        print(f"  CREMA-D 目录不存在: {CREMA_DATA_DIR}，跳过")
+    
+    # 合并样本
+    samples = ravdess_samples + cremad_samples
+    print(f"  总计 {len(samples)} 条语音样本")
     print(f"  情感类别: {NUM_CLASSES} 类 — {list(EMOTION_TO_IDX.keys())}")
 
-    # 按演员划分
-    train_samples, val_samples, test_samples = split_by_actor(samples)
-    print(f"  数据划分 (按 Actor, 防止数据泄露):")
-    print(f"    训练集: {len(train_samples)} 条 (Actor 01-18)")
-    print(f"    验证集: {len(val_samples)} 条 (Actor 19-20)")
-    print(f"    测试集: {len(test_samples)} 条 (Actor 21-24)")
+    # 按说话者划分数据集，防止数据泄露
+    # RAVDESS: speaker 1-24
+    # CREMA-D: speaker 1001-1091
+    # 分别划分后合并
+    train_samples, val_samples, test_samples = [], [], []
+    
+    # 划分 RAVDESS（按原有 actor 划分）
+    ravdess_train, ravdess_val, ravdess_test = split_by_actor(ravdess_samples)
+    train_samples.extend(ravdess_train)
+    val_samples.extend(ravdess_val)
+    test_samples.extend(ravdess_test)
+    
+    # 划分 CREMA-D（按 speaker 排序，前70%训练，中间15%验证，最后15%测试）
+    if cremad_samples:
+        # 获取唯一的说话者ID并排序
+        cremad_speakers = sorted(set(s["speaker"] for s in cremad_samples))
+        num_speakers = len(cremad_speakers)
+        train_split = int(0.7 * num_speakers)
+        val_split = int(0.85 * num_speakers)
+        train_speakers = cremad_speakers[:train_split]
+        val_speakers = cremad_speakers[train_split:val_split]
+        test_speakers = cremad_speakers[val_split:]
+        
+        for s in cremad_samples:
+            speaker = s["speaker"]
+            if speaker in train_speakers:
+                train_samples.append(s)
+            elif speaker in val_speakers:
+                val_samples.append(s)
+            else:
+                test_samples.append(s)
+        print(f"  CREMA-D 划分: {len(train_speakers)} train, {len(val_speakers)} val, {len(test_speakers)} test speakers")
+    
+    print(f"\n  数据划分 (按 Speaker, 防止数据泄露):")
+    print(f"    训练集: {len(train_samples)} 条")
+    print(f"    验证集: {len(val_samples)} 条")
+    print(f"    测试集: {len(test_samples)} 条")
 
     # 绘制情感分布
     plot_emotion_distribution(samples, os.path.join(OUTPUT_DIR, "emotion_distribution.png"))

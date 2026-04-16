@@ -160,6 +160,7 @@ def print_doctor_report(
     print(f"[INFO] model: {resolve_model_path(repo_root, None)}")
     print(f"[INFO] model exists: {resolve_model_path(repo_root, None).exists()}")
     print(f"[INFO] dataset exists: {(repo_root / 'data' / 'ravdess').is_dir()}")
+    print(f"[INFO] CREMA-D dataset exists: {(repo_root / 'data' / 'cremad' / 'AudioWAV').is_dir()}")
 
 
 def dispatch_command(args: argparse.Namespace, repo_root: Path, venv_python: Path) -> int:
