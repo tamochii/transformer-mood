@@ -919,6 +919,38 @@ def predict_single(model, audio_path: str, device, emotion_map=None) -> dict:
     return result
 
 
+def resolve_inference_model_path(explicit_model_path: str | None) -> str:
+    if explicit_model_path:
+        return explicit_model_path
+    configured_model_path = os.environ.get("EMOTION_MODEL_PATH")
+    if configured_model_path:
+        return configured_model_path
+    return os.path.join(OUTPUT_DIR, "best_model.pth")
+
+
+def load_inference_model(model_path: str):
+    payload = torch.load(model_path, map_location=DEVICE, weights_only=False)
+    if isinstance(payload, dict) and "model_state_dict" in payload:
+        config = payload.get("config", {})
+        model = SpeechEmotionClassifier(
+            input_dim=config.get("input_dim", FEATURE_DIM),
+            num_classes=config.get("num_classes", len(IDX_TO_EMOTION)),
+            d_model=config.get("d_model", D_MODEL),
+            nhead=config.get("nhead", NHEAD),
+            num_layers=config.get("num_layers", NUM_ENCODER_LAYERS),
+            dim_feedforward=config.get("dim_feedforward", DIM_FEEDFORWARD),
+            dropout=config.get("dropout", DROPOUT),
+        ).to(DEVICE)
+        model.load_state_dict(payload["model_state_dict"])
+        emotion_map = payload.get("emotion_map", IDX_TO_EMOTION)
+    else:
+        model = SpeechEmotionClassifier(input_dim=FEATURE_DIM).to(DEVICE)
+        model.load_state_dict(payload)
+        emotion_map = IDX_TO_EMOTION
+    model.eval()
+    return model, emotion_map
+
+
 # ############################################################
 # 可视化
 # ############################################################
@@ -1199,16 +1231,13 @@ def main():
         if args.audio is None:
             print("[ERROR] 推理模式需要指定 --audio 参数")
             sys.exit(1)
-        model_path = args.model_path or os.path.join(OUTPUT_DIR, "best_model.pth")
+        model_path = resolve_inference_model_path(args.model_path)
         if not os.path.exists(model_path):
             print(f"[ERROR] 模型文件不存在: {model_path}")
             sys.exit(1)
 
         print(f"[INFO] 加载模型: {model_path}")
-        model = SpeechEmotionClassifier(input_dim=FEATURE_DIM).to(DEVICE)
-        model.load_state_dict(torch.load(model_path, map_location=DEVICE, weights_only=True))
-
-        emotion_map = torch.load(model_path, map_location="cpu", weights_only=False).get("emotion_map", IDX_TO_EMOTION)
+        model, emotion_map = load_inference_model(model_path)
         result = predict_single(model, args.audio, DEVICE, emotion_map=emotion_map)
         print(f"\n{'='*50}")
         print(f"  音频文件: {args.audio}")

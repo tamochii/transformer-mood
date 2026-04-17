@@ -62,6 +62,9 @@ def get_venv_python_path(repo_root: Path, platform_name: str | None = None) -> P
 def resolve_model_path(repo_root: Path, explicit_model: str | None) -> Path:
     if explicit_model:
         return Path(explicit_model).expanduser().resolve()
+    complete_checkpoint = repo_root / "output" / "model_complete.pth"
+    if complete_checkpoint.exists():
+        return complete_checkpoint
     return repo_root / "output" / "best_model.pth"
 
 
@@ -180,7 +183,7 @@ def dispatch_command(args: argparse.Namespace, repo_root: Path, venv_python: Pat
     if validation.errors:
         return 1
 
-    child_env = build_child_env(repo_root, validation.model_path if explicit_model else None)
+    child_env = build_child_env(repo_root, validation.model_path)
 
     if command == "doctor":
         print_doctor_report(repo_root, venv_python, dependencies_ready(venv_python, repo_root), ffmpeg_path)

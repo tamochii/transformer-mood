@@ -183,6 +183,48 @@ class SpeechEmotionFeatureTests(unittest.TestCase):
         self.assertEqual(result["predicted_emotion"], "surprised")
         self.assertEqual(set(result["all_probabilities"].keys()), set(emotion_map.values()))
 
+    def test_predict_mode_uses_env_model_complete_checkpoint(self):
+        state_dict = sec.SpeechEmotionClassifier(input_dim=sec.FEATURE_DIM).state_dict()
+        checkpoint = {
+            "model_state_dict": state_dict,
+            "config": {
+                "input_dim": sec.FEATURE_DIM,
+                "num_classes": len(sec.IDX_TO_EMOTION),
+                "d_model": sec.D_MODEL,
+                "nhead": sec.NHEAD,
+                "num_layers": sec.NUM_ENCODER_LAYERS,
+                "dim_feedforward": sec.DIM_FEEDFORWARD,
+                "dropout": sec.DROPOUT,
+            },
+            "emotion_map": sec.IDX_TO_EMOTION,
+        }
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            model_path = Path(tmpdir) / "model_complete.pth"
+            audio_path = Path(tmpdir) / "sample.wav"
+            torch.save(checkpoint, model_path)
+            audio_path.write_bytes(b"fake")
+
+            with patch.object(sys, "argv", [
+                "speech_emotion_classifier",
+                "--mode",
+                "predict",
+                "--audio",
+                str(audio_path),
+                "--model_path",
+                str(model_path),
+            ]), patch.object(sec, "predict_single", return_value={
+                "predicted_emotion": "neutral",
+                "confidence": 0.9,
+                "all_probabilities": {emotion: 0.0 for emotion in sec.IDX_TO_EMOTION.values()},
+            }) as predict_mock:
+                sec.main()
+
+        self.assertIsInstance(predict_mock.call_args.args[0], sec.SpeechEmotionClassifier)
+        self.assertEqual(predict_mock.call_args.args[1], str(audio_path))
+        self.assertEqual(predict_mock.call_args.args[2], sec.DEVICE)
+        self.assertEqual(predict_mock.call_args.kwargs["emotion_map"], sec.IDX_TO_EMOTION)
+
 
 class AdditionalDatasetScanTests(unittest.TestCase):
     def test_resolve_cremad_data_dir_accepts_flat_layout(self):

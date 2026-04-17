@@ -48,11 +48,32 @@ def _load_model(model_path: Path) -> SpeechEmotionClassifier:
     if not model_path.exists():
         raise FileNotFoundError(f"模型文件不存在: {model_path}")
 
-    model = SpeechEmotionClassifier(input_dim=FEATURE_DIM).to(DEVICE)
-    state_dict = torch.load(model_path, map_location=DEVICE, weights_only=True)
+    state_dict = torch.load(model_path, map_location=DEVICE, weights_only=False)
+    if isinstance(state_dict, dict) and "model_state_dict" in state_dict:
+        config = state_dict.get("config", {})
+        model = SpeechEmotionClassifier(
+            input_dim=config.get("input_dim", FEATURE_DIM),
+            num_classes=config.get("num_classes", len(IDX_TO_EMOTION)),
+            d_model=config.get("d_model", 128),
+            nhead=config.get("nhead", 8),
+            num_layers=config.get("num_layers", 4),
+            dim_feedforward=config.get("dim_feedforward", 512),
+            dropout=config.get("dropout", 0.2),
+        ).to(DEVICE)
+        state_dict = state_dict["model_state_dict"]
+    else:
+        model = SpeechEmotionClassifier(input_dim=FEATURE_DIM).to(DEVICE)
     model.load_state_dict(state_dict)
     model.eval()
     return model
+
+
+def _load_checkpoint_metadata(model_path: Path) -> dict:
+    """读取 checkpoint 中的附加信息，兼容裸 state_dict。"""
+    payload = torch.load(model_path, map_location="cpu", weights_only=False)
+    if isinstance(payload, dict) and "model_state_dict" in payload:
+        return payload
+    return {"emotion_map": IDX_TO_EMOTION}
 
 
 def _load_model_state(model_path: Path) -> tuple[SpeechEmotionClassifier | None, str | None]:
@@ -122,7 +143,10 @@ async def lifespan(app: FastAPI):
     model_path = _get_model_path()
     app.state.ffmpeg_path = shutil.which("ffmpeg")
     app.state.model_path = str(model_path)
+    app.state.emotion_map = IDX_TO_EMOTION
     app.state.model, app.state.model_error = _load_model_state(model_path)
+    if app.state.model is not None:
+        app.state.emotion_map = _load_checkpoint_metadata(model_path).get("emotion_map", IDX_TO_EMOTION)
     yield
 
 
@@ -144,6 +168,7 @@ async def index(request: Request):
 
 @app.get("/api/health")
 async def health(request: Request):
+    emotion_map = request.app.state.emotion_map
     return {
         "status": "ok",
         "device": str(DEVICE),
@@ -151,7 +176,7 @@ async def health(request: Request):
         "model_path": request.app.state.model_path,
         "model_loaded": request.app.state.model is not None,
         "model_error": request.app.state.model_error,
-        "labels": [IDX_TO_EMOTION[idx] for idx in sorted(IDX_TO_EMOTION)],
+        "labels": [emotion_map[idx] for idx in sorted(emotion_map)],
     }
 
 
@@ -186,7 +211,13 @@ async def predict_audio(request: Request, audio: UploadFile = File(...)):
                     output_file.write(chunk)
 
             await run_in_threadpool(_normalize_audio, source_path, normalized_path, ffmpeg_path)
-            result = await run_in_threadpool(predict_single, model, str(normalized_path), DEVICE)
+            result = await run_in_threadpool(
+                predict_single,
+                model,
+                str(normalized_path),
+                DEVICE,
+                request.app.state.emotion_map,
+            )
             return _format_prediction(result, audio.filename, audio.content_type)
     except RuntimeError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc

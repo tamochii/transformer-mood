@@ -1,8 +1,10 @@
 import importlib
 import importlib.util
+import os
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 
 def load_run_module(test_case: unittest.TestCase):
@@ -101,6 +103,48 @@ class RunValidationTests(unittest.TestCase):
 
         self.assertTrue(result.errors)
         self.assertIn("data/ravdess", result.errors[0])
+
+    def test_webui_dispatch_uses_resolved_default_model_path(self):
+        run = load_run_module(self)
+        model_path = self.repo_root / "output" / "model_complete.pth"
+        model_path.write_bytes(b"checkpoint")
+
+        args = run.parse_args(["webui"])
+        with patch.object(run.subprocess, "run") as run_mock:
+            run_mock.return_value.returncode = 0
+            result = run.dispatch_command(
+                args=args,
+                repo_root=self.repo_root,
+                venv_python=self.repo_root / ".venv" / "bin" / "python",
+            )
+
+        self.assertEqual(result, 0)
+        self.assertEqual(
+            run_mock.call_args.kwargs["env"]["EMOTION_MODEL_PATH"],
+            str(model_path),
+        )
+
+    def test_predict_dispatch_uses_resolved_default_model_path(self):
+        run = load_run_module(self)
+        model_path = self.repo_root / "output" / "model_complete.pth"
+        model_path.write_bytes(b"checkpoint")
+        audio_path = self.repo_root / "sample.wav"
+        audio_path.write_bytes(b"fake")
+
+        args = run.parse_args(["predict", "--audio", str(audio_path)])
+        with patch.object(run.subprocess, "run") as run_mock:
+            run_mock.return_value.returncode = 0
+            result = run.dispatch_command(
+                args=args,
+                repo_root=self.repo_root,
+                venv_python=self.repo_root / ".venv" / "bin" / "python",
+            )
+
+        self.assertEqual(result, 0)
+        self.assertEqual(
+            run_mock.call_args.kwargs["env"]["EMOTION_MODEL_PATH"],
+            str(model_path),
+        )
 
 
 if __name__ == "__main__":
