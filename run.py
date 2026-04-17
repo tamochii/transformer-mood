@@ -46,7 +46,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     argv = list(sys.argv[1:] if argv is None else argv)
     if not argv:
         argv = ["webui"]
-    return build_parser().parse_args(argv)
+    args = build_parser().parse_args(argv)
+    if getattr(args, "command", None) == "train" and args.extra_args[:1] == ["--"]:
+        args.extra_args = args.extra_args[1:]
+    return args
 
 
 def get_venv_python_path(repo_root: Path, platform_name: str | None = None) -> Path:
@@ -160,7 +163,12 @@ def print_doctor_report(
     print(f"[INFO] model: {resolve_model_path(repo_root, None)}")
     print(f"[INFO] model exists: {resolve_model_path(repo_root, None).exists()}")
     print(f"[INFO] dataset exists: {(repo_root / 'data' / 'ravdess').is_dir()}")
-    print(f"[INFO] CREMA-D dataset exists: {(repo_root / 'data' / 'cremad' / 'AudioWAV').is_dir()}")
+    print(
+        f"[INFO] CREMA-D dataset exists: "
+        f"{((repo_root / 'data' / 'cremad' / 'AudioWAV').is_dir() or (repo_root / 'data' / 'cremad').is_dir())}"
+    )
+    print(f"[INFO] SAVEE dataset exists: {(repo_root / 'data' / 'savee').is_dir()}")
+    print(f"[INFO] TESS dataset exists: {(repo_root / 'data' / 'tess').is_dir()}")
 
 
 def dispatch_command(args: argparse.Namespace, repo_root: Path, venv_python: Path) -> int:

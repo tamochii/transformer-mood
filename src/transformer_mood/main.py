@@ -15,8 +15,8 @@ from starlette.concurrency import run_in_threadpool
 
 from transformer_mood.speech_emotion_classifier import (
     DEVICE,
+    FEATURE_DIM,
     IDX_TO_EMOTION,
-    N_MELS,
     OUTPUT_DIR,
     SpeechEmotionClassifier,
     predict_single,
@@ -48,7 +48,7 @@ def _load_model(model_path: Path) -> SpeechEmotionClassifier:
     if not model_path.exists():
         raise FileNotFoundError(f"模型文件不存在: {model_path}")
 
-    model = SpeechEmotionClassifier(input_dim=N_MELS).to(DEVICE)
+    model = SpeechEmotionClassifier(input_dim=FEATURE_DIM).to(DEVICE)
     state_dict = torch.load(model_path, map_location=DEVICE, weights_only=True)
     model.load_state_dict(state_dict)
     model.eval()

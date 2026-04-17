@@ -29,7 +29,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.optim as optim
-from torch.utils.data import Dataset, DataLoader
+from torch.utils.data import Dataset, DataLoader, WeightedRandomSampler
 import torchaudio
 import torchaudio.transforms as T
 import librosa
@@ -54,12 +54,15 @@ SAMPLE_RATE = 16000       # 统一重采样到 16kHz
 N_MELS = 128              # Mel 频带数（真实数据用更高分辨率）
 N_MFCC = 40               # MFCC 系数数
 MAX_SEQ_LEN = 200         # 固定序列长度 L（时间帧数）
+USE_DELTA = True
+FEATURE_DIM = N_MELS * 3 if USE_DELTA else N_MELS
 D_MODEL = 128             # Transformer 隐藏维度
 NHEAD = 8                 # 多头注意力头数
 NUM_ENCODER_LAYERS = 4    # Encoder 层数
 DIM_FEEDFORWARD = 512     # FFN 中间维度
 DROPOUT = 0.2
 BATCH_SIZE = 16
+NUM_WORKERS = 0
 NUM_EPOCHS = 60
 LEARNING_RATE = 1e-4
 WEIGHT_DECAY = 1e-4
@@ -68,7 +71,9 @@ WEIGHT_DECAY = 1e-4
 PACKAGE_DIR = Path(__file__).resolve().parent
 PROJECT_ROOT = PACKAGE_DIR.parents[1]
 DATA_DIR = str(PROJECT_ROOT / "data" / "ravdess")
-CREMA_DATA_DIR = str(PROJECT_ROOT / "data" / "cremad" / "AudioWAV")
+CREMA_DATA_ROOT = str(PROJECT_ROOT / "data" / "cremad")
+SAVEE_DATA_DIR = str(PROJECT_ROOT / "data" / "savee")
+TESS_DATA_DIR = str(PROJECT_ROOT / "data" / "tess")
 OUTPUT_DIR = str(PROJECT_ROOT / "output")
 
 # RAVDESS 情感标签映射（文件名第3段）
@@ -95,10 +100,53 @@ CREMA_EMOTIONS = {
     "SAD": "sad",
 }
 
+SAVEE_EMOTIONS = {
+    "a": "angry",
+    "d": "disgust",
+    "f": "fearful",
+    "h": "happy",
+    "n": "neutral",
+    "sa": "sad",
+    "su": "surprised",
+}
+
+TESS_EMOTIONS = {
+    "angry": "angry",
+    "disgust": "disgust",
+    "fear": "fearful",
+    "fearful": "fearful",
+    "happy": "happy",
+    "neutral": "neutral",
+    "ps": "surprised",
+    "pleasant_surprise": "surprised",
+    "pleasant_surprised": "surprised",
+    "sad": "sad",
+}
+
+TESS_ONLY_EMOTIONS = {
+    "angry": "angry",
+    "disgust": "disgust",
+    "fearful": "fearful",
+    "happy": "happy",
+    "neutral": "neutral",
+    "sad": "sad",
+    "surprised": "surprised",
+}
+
 # 使用全部 8 类情感
 EMOTION_TO_IDX = {name: idx for idx, name in enumerate(RAVDESS_EMOTIONS.values())}
 IDX_TO_EMOTION = {idx: name for name, idx in EMOTION_TO_IDX.items()}
 NUM_CLASSES = len(EMOTION_TO_IDX)
+
+
+def build_label_space(dataset_name: str):
+    """根据数据集返回标签空间。"""
+    if dataset_name == "tess":
+        emotion_to_idx = {name: idx for idx, name in enumerate(TESS_ONLY_EMOTIONS.values())}
+    else:
+        emotion_to_idx = {name: idx for idx, name in enumerate(RAVDESS_EMOTIONS.values())}
+    idx_to_emotion = {idx: name for name, idx in emotion_to_idx.items()}
+    return emotion_to_idx, idx_to_emotion
 
 
 def set_seed(seed=SEED):
@@ -164,6 +212,39 @@ def parse_cremad_filename(filepath: str) -> dict:
     }
 
 
+def resolve_cremad_data_dir(data_dir: str) -> str:
+    """兼容 CREMA-D 的两种常见目录布局。"""
+    audio_wav_dir = os.path.join(data_dir, "AudioWAV")
+    if os.path.isdir(audio_wav_dir):
+        return audio_wav_dir
+    return data_dir
+
+
+def parse_savee_filename(filepath: str) -> dict:
+    """解析 SAVEE 文件名。格式如 DC_a01.wav / JE_sa03.wav。"""
+    filename = os.path.basename(filepath)
+    stem = filename.replace(".wav", "")
+    speaker, emotion_part = stem.split("_", 1)
+    emotion_code = "".join(ch for ch in emotion_part.lower() if ch.isalpha())
+    return {
+        "speaker": speaker,
+        "emotion": emotion_code,
+        "emotion_name": SAVEE_EMOTIONS.get(emotion_code, "unknown"),
+    }
+
+
+def parse_tess_filename(filepath: str) -> dict:
+    """解析 TESS 文件名。格式如 OAF_back_angry.wav。"""
+    filename = os.path.basename(filepath)
+    parts = filename.replace(".wav", "").split("_")
+    emotion_code = "_".join(parts[2:]).lower()
+    return {
+        "speaker": parts[0],
+        "emotion": emotion_code,
+        "emotion_name": TESS_EMOTIONS.get(emotion_code, "unknown"),
+    }
+
+
 def load_audio(filepath: str, target_sr: int = SAMPLE_RATE) -> torch.Tensor:
     """
     加载音频文件并重采样到目标采样率。
@@ -212,6 +293,108 @@ def extract_mel_spectrogram(waveform: torch.Tensor, sr: int = SAMPLE_RATE) -> to
     mel_spec = mel_transform(waveform)            # (1, n_mels, time)
     mel_spec_db = T.AmplitudeToDB(top_db=80)(mel_spec)  # 转为对数刻度
     return mel_spec_db.squeeze(0)                  # (n_mels, time)
+
+
+def build_feature_sequence(mel_spec: torch.Tensor) -> torch.Tensor:
+    """对 mel 频谱做归一化并按需拼接 delta 特征。"""
+    mel_spec = (mel_spec - mel_spec.mean(dim=1, keepdim=True)) / (
+        mel_spec.std(dim=1, keepdim=True) + 1e-6
+    )
+    if not USE_DELTA:
+        return mel_spec.T
+
+    num_frames = mel_spec.shape[1]
+    if num_frames < 3:
+        delta1 = torch.zeros_like(mel_spec)
+        delta2 = torch.zeros_like(mel_spec)
+    else:
+        delta_width = min(9, num_frames if num_frames % 2 == 1 else num_frames - 1)
+        mel_spec_np = mel_spec.cpu().numpy()
+        delta1 = torch.from_numpy(librosa.feature.delta(mel_spec_np, width=delta_width)).to(mel_spec.dtype)
+        delta2 = torch.from_numpy(librosa.feature.delta(mel_spec_np, order=2, width=delta_width)).to(mel_spec.dtype)
+
+    return torch.cat([mel_spec, delta1, delta2], dim=0).T
+
+
+def build_feature_cache_dir(dataset_name: str) -> Path:
+    """返回特征缓存目录。"""
+    if dataset_name == "tess":
+        return Path(OUTPUT_DIR) / "cache" / f"tess_7class_fd{FEATURE_DIM}"
+    return Path(OUTPUT_DIR) / "cache" / f"{dataset_name}_fd{FEATURE_DIM}"
+
+
+def build_feature_payload(sample: dict) -> dict:
+    """将单条样本转换为可缓存的特征载荷。"""
+    mel_spec = extract_mel_spectrogram(load_audio(sample["filepath"]))
+    feat = build_feature_sequence(mel_spec)
+    seq_len = feat.shape[0]
+    feat_dim = feat.shape[1]
+    mask = torch.ones(MAX_SEQ_LEN, dtype=torch.bool)
+    if seq_len > MAX_SEQ_LEN:
+        feat = feat[:MAX_SEQ_LEN, :]
+    elif seq_len < MAX_SEQ_LEN:
+        pad_len = MAX_SEQ_LEN - seq_len
+        feat = torch.cat([feat, torch.zeros(pad_len, feat_dim, dtype=feat.dtype)], dim=0)
+        mask[seq_len:] = False
+    return {
+        "feature": feat,
+        "label": sample["emotion_idx"],
+        "mask": mask,
+        "speaker": sample.get("speaker"),
+        "filepath": sample["filepath"],
+    }
+
+
+class CachedFeatureDataset(Dataset):
+    """从缓存特征文件读取样本。"""
+
+    def __init__(self, cache_paths: list[Path], augment: bool = False):
+        self.cache_paths = cache_paths
+        self.augment = augment
+
+    def __len__(self):
+        return len(self.cache_paths)
+
+    def __getitem__(self, idx):
+        payload = torch.load(self.cache_paths[idx], map_location="cpu", weights_only=False)
+        feat = payload["feature"].clone()
+        if self.augment:
+            feat = SpeechEmotionDataset([], augment=True)._spec_augment(feat)
+        label = torch.tensor(payload["label"], dtype=torch.long)
+        mask = payload["mask"].clone()
+        return feat, label, mask
+
+
+def ensure_feature_cache(samples: list, dataset_name: str):
+    """为样本生成缓存文件，并回填 cache_path。"""
+    cache_dir = build_feature_cache_dir(dataset_name)
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    cached_samples = []
+    for index, sample in enumerate(samples):
+        cache_path = cache_dir / f"sample_{index:05d}.pt"
+        if not cache_path.exists():
+            torch.save(build_feature_payload(sample), cache_path)
+        cached_samples.append({**sample, "cache_path": cache_path})
+    return cached_samples
+
+
+def build_datasets_from_samples(train_samples, val_samples, test_samples, use_cache: bool):
+    """根据是否使用缓存构建 Dataset。"""
+    if use_cache:
+        train_dataset = CachedFeatureDataset([sample["cache_path"] for sample in train_samples], augment=True)
+        val_dataset = CachedFeatureDataset([sample["cache_path"] for sample in val_samples], augment=False)
+        test_dataset = CachedFeatureDataset([sample["cache_path"] for sample in test_samples], augment=False)
+    else:
+        train_dataset = SpeechEmotionDataset(train_samples, augment=True)
+        val_dataset = SpeechEmotionDataset(val_samples, augment=False)
+        test_dataset = SpeechEmotionDataset(test_samples, augment=False)
+    return train_dataset, val_dataset, test_dataset
+
+
+def resolve_amp_settings(device: torch.device):
+    """根据设备决定是否启用 AMP。"""
+    enabled = device.type == "cuda"
+    return enabled, enabled
 
 
 def scan_ravdess_dataset(data_dir: str) -> list:
@@ -272,6 +455,49 @@ def scan_cremad_dataset(data_dir: str) -> list:
     return samples
 
 
+def scan_savee_dataset(data_dir: str) -> list:
+    """扫描 SAVEE 数据集目录。"""
+    samples = []
+    if not os.path.isdir(data_dir):
+        return samples
+    for wav_file in sorted(os.listdir(data_dir)):
+        if not wav_file.endswith(".wav"):
+            continue
+        filepath = os.path.join(data_dir, wav_file)
+        meta = parse_savee_filename(filepath)
+        emotion_name = meta["emotion_name"]
+        if emotion_name in EMOTION_TO_IDX:
+            samples.append({
+                "filepath": filepath,
+                "emotion_name": emotion_name,
+                "emotion_idx": EMOTION_TO_IDX[emotion_name],
+                "speaker": meta["speaker"],
+            })
+    return samples
+
+
+def scan_tess_dataset(data_dir: str) -> list:
+    """递归扫描 TESS 数据集目录。"""
+    samples = []
+    if not os.path.isdir(data_dir):
+        return samples
+    for root, _, files in os.walk(data_dir):
+        for wav_file in sorted(files):
+            if not wav_file.endswith(".wav"):
+                continue
+            filepath = os.path.join(root, wav_file)
+            meta = parse_tess_filename(filepath)
+            emotion_name = meta["emotion_name"]
+            if emotion_name in EMOTION_TO_IDX:
+                samples.append({
+                    "filepath": filepath,
+                    "emotion_name": emotion_name,
+                    "emotion_idx": EMOTION_TO_IDX[emotion_name],
+                    "speaker": meta["speaker"],
+                })
+    return samples
+
+
 # ############################################################
 # 任务 2: Dataset 类 —— 截断/填充至固定长度 L
 # ############################################################
@@ -323,10 +549,13 @@ class SpeechEmotionDataset(Dataset):
 
         # 3. 提取 Mel-spectrogram
         mel_spec = extract_mel_spectrogram(waveform)  # (n_mels, time_frames)
+        feat = build_feature_sequence(mel_spec)
 
-        # 4. 转置为 (time_frames, n_mels)
-        feat = mel_spec.T  # (time, n_mels)
+        if self.augment:
+            feat = self._spec_augment(feat)
+
         seq_len = feat.shape[0]
+        feat_dim = feat.shape[1]
 
         # 5. 创建 padding mask
         mask = torch.ones(self.max_seq_len, dtype=torch.bool)
@@ -336,7 +565,7 @@ class SpeechEmotionDataset(Dataset):
             feat = feat[:self.max_seq_len, :]
         elif seq_len < self.max_seq_len:
             pad_len = self.max_seq_len - seq_len
-            padding = torch.zeros(pad_len, feat.shape[1])
+            padding = torch.zeros(pad_len, feat_dim, dtype=feat.dtype)
             feat = torch.cat([feat, padding], dim=0)
             mask[seq_len:] = False  # 填充位置标记为 False
 
@@ -358,6 +587,28 @@ class SpeechEmotionDataset(Dataset):
             scale = random.uniform(0.8, 1.2)
             waveform = waveform * scale
         return waveform
+
+    def _spec_augment(self, feat: torch.Tensor) -> torch.Tensor:
+        """对时频特征做简单 SpecAugment。"""
+        feat = feat.clone()
+        time_len, feat_dim = feat.shape
+
+        freq_bins = N_MELS if USE_DELTA and feat_dim >= N_MELS else feat_dim
+        freq_mask_width = random.randint(0, min(27, freq_bins // 4))
+        if freq_mask_width > 0:
+            freq_start = random.randint(0, freq_bins - freq_mask_width)
+            if USE_DELTA and feat_dim >= FEATURE_DIM:
+                for offset in range(0, feat_dim, N_MELS):
+                    feat[:, offset + freq_start:offset + freq_start + freq_mask_width] = 0
+            else:
+                feat[:, freq_start:freq_start + freq_mask_width] = 0
+
+        time_mask_width = random.randint(0, min(40, time_len // 4))
+        if time_mask_width > 0:
+            time_start = random.randint(0, time_len - time_mask_width)
+            feat[time_start:time_start + time_mask_width, :] = 0
+
+        return feat
 
 
 # ############################################################
@@ -545,26 +796,40 @@ class SpeechEmotionClassifier(nn.Module):
 # ############################################################
 
 
-def train_one_epoch(model, dataloader, criterion, optimizer, scheduler, device, epoch):
+def train_one_epoch(model, dataloader, criterion, optimizer, scheduler, device, epoch,
+                    amp_enabled: bool = False, scaler=None):
     """单个 epoch 的训练。"""
     model.train()
     running_loss = 0.0
     correct = 0
     total = 0
 
-    for batch_idx, (features, labels, masks) in enumerate(dataloader):
+    for features, labels, masks in dataloader:
         features = features.to(device)
         labels = labels.to(device)
         masks = masks.to(device)
 
-        logits = model(features, mask=masks)
-        loss = criterion(logits, labels)
-
         optimizer.zero_grad()
-        loss.backward()
-        # 梯度裁剪，防止梯度爆炸
-        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
-        optimizer.step()
+        with torch.amp.autocast(device_type=device.type, enabled=amp_enabled):
+            use_mixup = random.random() < 0.5
+            if use_mixup:
+                mixed_features, labels_a, labels_b, mixed_masks, lam = apply_mixup(features, labels, masks)
+                logits = model(mixed_features, mask=mixed_masks)
+                loss = lam * criterion(logits, labels_a) + (1 - lam) * criterion(logits, labels_b)
+            else:
+                logits = model(features, mask=masks)
+                loss = criterion(logits, labels)
+
+        if scaler is not None:
+            scaler.scale(loss).backward()
+            scaler.unscale_(optimizer)
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+            scaler.step(optimizer)
+            scaler.update()
+        else:
+            loss.backward()
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+            optimizer.step()
 
         running_loss += loss.item() * features.size(0)
         _, predicted = torch.max(logits, 1)
@@ -577,7 +842,7 @@ def train_one_epoch(model, dataloader, criterion, optimizer, scheduler, device, 
     return running_loss / total, correct / total
 
 
-def evaluate(model, dataloader, criterion, device):
+def evaluate(model, dataloader, criterion, device, amp_enabled: bool = False):
     """评估模型。"""
     model.eval()
     running_loss = 0.0
@@ -592,8 +857,9 @@ def evaluate(model, dataloader, criterion, device):
             labels = labels.to(device)
             masks = masks.to(device)
 
-            logits = model(features, mask=masks)
-            loss = criterion(logits, labels)
+            with torch.amp.autocast(device_type=device.type, enabled=amp_enabled):
+                logits = model(features, mask=masks)
+                loss = criterion(logits, labels)
 
             running_loss += loss.item() * features.size(0)
             _, predicted = torch.max(logits, 1)
@@ -606,7 +872,7 @@ def evaluate(model, dataloader, criterion, device):
     return running_loss / total, correct / total, np.array(all_preds), np.array(all_labels)
 
 
-def predict_single(model, audio_path: str, device) -> dict:
+def predict_single(model, audio_path: str, device, emotion_map=None) -> dict:
     """
     对单个音频文件进行情感预测。
 
@@ -617,19 +883,23 @@ def predict_single(model, audio_path: str, device) -> dict:
     Returns:
         dict: 包含预测标签、概率分布
     """
+    if emotion_map is None:
+        emotion_map = IDX_TO_EMOTION
+
     model.eval()
     waveform = load_audio(audio_path)
     mel_spec = extract_mel_spectrogram(waveform)
-    feat = mel_spec.T  # (time, n_mels)
+    feat = build_feature_sequence(mel_spec)
 
     # 截断/填充
     seq_len = feat.shape[0]
+    feat_dim = feat.shape[1]
     mask = torch.ones(MAX_SEQ_LEN, dtype=torch.bool)
     if seq_len > MAX_SEQ_LEN:
         feat = feat[:MAX_SEQ_LEN, :]
     elif seq_len < MAX_SEQ_LEN:
         pad_len = MAX_SEQ_LEN - seq_len
-        padding = torch.zeros(pad_len, feat.shape[1])
+        padding = torch.zeros(pad_len, feat_dim, dtype=feat.dtype)
         feat = torch.cat([feat, padding], dim=0)
         mask[seq_len:] = False
 
@@ -642,9 +912,9 @@ def predict_single(model, audio_path: str, device) -> dict:
         pred_idx = torch.argmax(probs).item()
 
     result = {
-        "predicted_emotion": IDX_TO_EMOTION[pred_idx],
+        "predicted_emotion": emotion_map[pred_idx],
         "confidence": probs[pred_idx].item(),
-        "all_probabilities": {IDX_TO_EMOTION[i]: probs[i].item() for i in range(NUM_CLASSES)},
+        "all_probabilities": {emotion_map[i]: probs[i].item() for i in range(len(emotion_map))},
     }
     return result
 
@@ -681,22 +951,24 @@ def plot_training_curves(train_losses, val_losses, train_accs, val_accs, save_pa
     print(f"[INFO] 训练曲线已保存至: {save_path}")
 
 
-def plot_confusion_matrix(y_true, y_pred, save_path):
+def plot_confusion_matrix(y_true, y_pred, save_path, class_names=None):
     """绘制混淆矩阵。"""
-    cm = confusion_matrix(y_true, y_pred)
+    if class_names is None:
+        class_names = [IDX_TO_EMOTION[i] for i in range(NUM_CLASSES)]
+    labels = list(range(len(class_names)))
+    cm = confusion_matrix(y_true, y_pred, labels=labels)
     fig, ax = plt.subplots(figsize=(10, 8))
     im = ax.imshow(cm, interpolation="nearest", cmap=plt.cm.Blues)
     ax.figure.colorbar(im, ax=ax)
 
-    classes = [IDX_TO_EMOTION[i] for i in range(NUM_CLASSES)]
     ax.set(
         xticks=np.arange(cm.shape[1]),
         yticks=np.arange(cm.shape[0]),
-        xticklabels=classes,
-        yticklabels=classes,
+        xticklabels=class_names,
+        yticklabels=class_names,
         ylabel="True Label",
         xlabel="Predicted Label",
-        title="Confusion Matrix (RAVDESS)",
+        title="Confusion Matrix",
     )
     plt.setp(ax.get_xticklabels(), rotation=45, ha="right")
 
@@ -713,20 +985,22 @@ def plot_confusion_matrix(y_true, y_pred, save_path):
     print(f"[INFO] 混淆矩阵已保存至: {save_path}")
 
 
-def plot_emotion_distribution(samples, save_path):
+def plot_emotion_distribution(samples, save_path, class_names=None):
     """绘制数据集情感分布柱状图。"""
     from collections import Counter
     emotions = [s["emotion_name"] for s in samples]
     counter = Counter(emotions)
-    names = [IDX_TO_EMOTION[i] for i in range(NUM_CLASSES)]
+    if class_names is None:
+        class_names = [IDX_TO_EMOTION[i] for i in range(NUM_CLASSES)]
+    names = class_names
     counts = [counter.get(name, 0) for name in names]
 
     fig, ax = plt.subplots(figsize=(10, 5))
-    colors = plt.cm.Set3(np.linspace(0, 1, NUM_CLASSES))
+    colors = plt.cm.Set3(np.linspace(0, 1, len(names)))
     bars = ax.bar(names, counts, color=colors, edgecolor="gray")
     ax.set_xlabel("Emotion")
     ax.set_ylabel("Count")
-    ax.set_title("RAVDESS Emotion Distribution")
+    ax.set_title("Emotion Distribution")
     ax.grid(axis="y", alpha=0.3)
 
     for bar, count in zip(bars, counts):
@@ -772,6 +1046,124 @@ def split_by_actor(samples: list, test_actors: list = None, val_actors: list = N
     return train_samples, val_samples, test_samples
 
 
+def split_by_sorted_speakers(samples: list, train_ratio: float = 0.7, val_ratio: float = 0.15):
+    """按 speaker 排序后切分，适合可选外部数据集。"""
+    if not samples:
+        return [], [], []
+
+    speakers = sorted(set(s["speaker"] for s in samples))
+    if len(speakers) == 1:
+        return samples, [], []
+
+    train_end = max(1, int(len(speakers) * train_ratio))
+    val_end = max(train_end, int(len(speakers) * (train_ratio + val_ratio)))
+    if len(speakers) - train_end > 1 and val_end == train_end:
+        val_end += 1
+    val_end = min(val_end, len(speakers) - 1)
+
+    train_speakers = set(speakers[:train_end])
+    val_speakers = set(speakers[train_end:val_end])
+    test_speakers = set(speakers[val_end:])
+
+    train_samples, val_samples, test_samples = [], [], []
+    for sample in samples:
+        if sample["speaker"] in train_speakers:
+            train_samples.append(sample)
+        elif sample["speaker"] in val_speakers:
+            val_samples.append(sample)
+        else:
+            test_samples.append(sample)
+    return train_samples, val_samples, test_samples
+
+
+def split_tess_samples(samples: list):
+    """按 speaker 和情感做稳定切分，保证 train/val/test 非空。"""
+    grouped = {}
+    for sample in samples:
+        grouped.setdefault(sample["speaker"], []).append(sample)
+
+    train_samples, val_samples, test_samples = [], [], []
+    for speaker in sorted(grouped):
+        speaker_samples = sorted(grouped[speaker], key=lambda item: item["filepath"])
+        emotion_ids = sorted({item["emotion_idx"] for item in speaker_samples})
+        for emotion_idx in emotion_ids:
+            emotion_samples = [item for item in speaker_samples if item["emotion_idx"] == emotion_idx]
+            train_cut = max(1, int(len(emotion_samples) * 0.6))
+            val_cut = max(train_cut + 1, int(len(emotion_samples) * 0.8))
+            train_samples.extend(emotion_samples[:train_cut])
+            val_samples.extend(emotion_samples[train_cut:val_cut])
+            test_samples.extend(emotion_samples[val_cut:])
+    return train_samples, val_samples, test_samples
+
+
+def prepare_training_samples(dataset_name: str):
+    """根据训练模式准备样本和标签空间。"""
+    emotion_to_idx, idx_to_emotion = build_label_space(dataset_name)
+    if dataset_name == "tess":
+        tess_samples = []
+        for sample in scan_tess_dataset(TESS_DATA_DIR):
+            if sample["emotion_name"] not in emotion_to_idx:
+                continue
+            tess_samples.append({
+                **sample,
+                "emotion_idx": emotion_to_idx[sample["emotion_name"]],
+            })
+        train_samples, val_samples, test_samples = split_tess_samples(tess_samples)
+        return train_samples, val_samples, test_samples, emotion_to_idx, idx_to_emotion
+
+    ravdess_samples = scan_ravdess_dataset(DATA_DIR)
+    cremad_samples = scan_cremad_dataset(resolve_cremad_data_dir(CREMA_DATA_ROOT))
+    savee_samples = scan_savee_dataset(SAVEE_DATA_DIR)
+    tess_samples = scan_tess_dataset(TESS_DATA_DIR)
+
+    train_samples, val_samples, test_samples = [], [], []
+    ravdess_train, ravdess_val, ravdess_test = split_by_actor(ravdess_samples)
+    train_samples.extend(ravdess_train)
+    val_samples.extend(ravdess_val)
+    test_samples.extend(ravdess_test)
+
+    for dataset_samples in [cremad_samples, savee_samples, tess_samples]:
+        ds_train, ds_val, ds_test = split_by_sorted_speakers(dataset_samples)
+        train_samples.extend(ds_train)
+        val_samples.extend(ds_val)
+        test_samples.extend(ds_test)
+
+    return train_samples, val_samples, test_samples, emotion_to_idx, idx_to_emotion
+
+
+def apply_mixup(features: torch.Tensor, labels: torch.Tensor, masks: torch.Tensor, alpha: float = 0.2):
+    """对一个 batch 应用 Mixup。"""
+    lam = float(np.random.beta(alpha, alpha))
+    indices = torch.randperm(features.size(0), device=features.device)
+    mixed_features = lam * features + (1 - lam) * features[indices]
+    mixed_masks = masks | masks[indices]
+    return mixed_features, labels, labels[indices], mixed_masks, lam
+
+
+def build_sample_weights(samples: list) -> torch.DoubleTensor:
+    """为 WeightedRandomSampler 构建逐样本权重。"""
+    labels = [sample["emotion_idx"] for sample in samples]
+    class_sample_counts = np.bincount(labels, minlength=NUM_CLASSES)
+    sample_weights = 1.0 / (class_sample_counts[labels] + 1e-6)
+    return torch.DoubleTensor(sample_weights)
+
+
+def build_lr_scheduler(optimizer, total_epochs: int, warmup_epochs: int = 5):
+    """构建 warmup + cosine 学习率调度器。"""
+    warmup_epochs = min(warmup_epochs, max(total_epochs - 1, 1))
+    warmup_scheduler = optim.lr_scheduler.LinearLR(
+        optimizer, start_factor=0.01, end_factor=1.0, total_iters=warmup_epochs
+    )
+    cosine_scheduler = optim.lr_scheduler.CosineAnnealingLR(
+        optimizer, T_max=max(total_epochs - warmup_epochs, 1), eta_min=1e-6
+    )
+    return optim.lr_scheduler.SequentialLR(
+        optimizer,
+        schedulers=[warmup_scheduler, cosine_scheduler],
+        milestones=[warmup_epochs],
+    )
+
+
 # ############################################################
 # 主函数
 # ############################################################
@@ -789,6 +1181,12 @@ def main():
                         help=f"训练轮数 (默认: {NUM_EPOCHS})")
     parser.add_argument("--batch_size", type=int, default=BATCH_SIZE,
                         help=f"批大小 (默认: {BATCH_SIZE})")
+    parser.add_argument("--num_workers", type=int, default=NUM_WORKERS,
+                        help=f"DataLoader worker 数 (默认: {NUM_WORKERS})")
+    parser.add_argument("--dataset", type=str, default="multi", choices=["multi", "tess"],
+                        help="训练数据范围: multi=多数据集, tess=TESS-only 7类")
+    parser.add_argument("--cache-features", action="store_true",
+                        help="训练前预缓存特征，减少每个 epoch 的 CPU 预处理开销")
     parser.add_argument("--lr", type=float, default=LEARNING_RATE,
                         help=f"学习率 (默认: {LEARNING_RATE})")
     args = parser.parse_args()
@@ -807,10 +1205,11 @@ def main():
             sys.exit(1)
 
         print(f"[INFO] 加载模型: {model_path}")
-        model = SpeechEmotionClassifier(input_dim=N_MELS).to(DEVICE)
+        model = SpeechEmotionClassifier(input_dim=FEATURE_DIM).to(DEVICE)
         model.load_state_dict(torch.load(model_path, map_location=DEVICE, weights_only=True))
 
-        result = predict_single(model, args.audio, DEVICE)
+        emotion_map = torch.load(model_path, map_location="cpu", weights_only=False).get("emotion_map", IDX_TO_EMOTION)
+        result = predict_single(model, args.audio, DEVICE, emotion_map=emotion_map)
         print(f"\n{'='*50}")
         print(f"  音频文件: {args.audio}")
         print(f"  预测情感: {result['predicted_emotion']}")
@@ -824,67 +1223,24 @@ def main():
 
     # ------ 训练模式 ------
     print("=" * 60)
-    print("  基于 Transformer 的语音情感特征分析 (RAVDESS + CREMA-D)")
+    print("  基于 Transformer 的语音情感特征分析")
     print("=" * 60)
 
     # === 第一阶段: 数据准备 ===
     print(f"\n[阶段1] 数据准备与预处理")
     print("-" * 40)
 
-    if not os.path.isdir(DATA_DIR):
+    if args.dataset == "multi" and not os.path.isdir(DATA_DIR):
         print(f"[ERROR] 数据目录不存在: {DATA_DIR}")
         print("请先下载 RAVDESS 数据集并解压到 data/ravdess/ 目录")
         sys.exit(1)
 
-    # 加载 RAVDESS 数据集
-    ravdess_samples = scan_ravdess_dataset(DATA_DIR)
-    print(f"  RAVDESS 扫描到 {len(ravdess_samples)} 条语音样本")
-    
-    # 加载 CREMA-D 数据集（如果存在）
-    cremad_samples = []
-    if os.path.isdir(CREMA_DATA_DIR):
-        cremad_samples = scan_cremad_dataset(CREMA_DATA_DIR)
-        print(f"  CREMA-D 扫描到 {len(cremad_samples)} 条语音样本")
-    else:
-        print(f"  CREMA-D 目录不存在: {CREMA_DATA_DIR}，跳过")
-    
-    # 合并样本
-    samples = ravdess_samples + cremad_samples
+    train_samples, val_samples, test_samples, emotion_to_idx, idx_to_emotion = prepare_training_samples(args.dataset)
+    num_classes = len(emotion_to_idx)
+    samples = train_samples + val_samples + test_samples
+    print(f"  模式: {'TESS-only 7类' if args.dataset == 'tess' else 'Multi-Dataset'}")
     print(f"  总计 {len(samples)} 条语音样本")
-    print(f"  情感类别: {NUM_CLASSES} 类 — {list(EMOTION_TO_IDX.keys())}")
-
-    # 按说话者划分数据集，防止数据泄露
-    # RAVDESS: speaker 1-24
-    # CREMA-D: speaker 1001-1091
-    # 分别划分后合并
-    train_samples, val_samples, test_samples = [], [], []
-    
-    # 划分 RAVDESS（按原有 actor 划分）
-    ravdess_train, ravdess_val, ravdess_test = split_by_actor(ravdess_samples)
-    train_samples.extend(ravdess_train)
-    val_samples.extend(ravdess_val)
-    test_samples.extend(ravdess_test)
-    
-    # 划分 CREMA-D（按 speaker 排序，前70%训练，中间15%验证，最后15%测试）
-    if cremad_samples:
-        # 获取唯一的说话者ID并排序
-        cremad_speakers = sorted(set(s["speaker"] for s in cremad_samples))
-        num_speakers = len(cremad_speakers)
-        train_split = int(0.7 * num_speakers)
-        val_split = int(0.85 * num_speakers)
-        train_speakers = cremad_speakers[:train_split]
-        val_speakers = cremad_speakers[train_split:val_split]
-        test_speakers = cremad_speakers[val_split:]
-        
-        for s in cremad_samples:
-            speaker = s["speaker"]
-            if speaker in train_speakers:
-                train_samples.append(s)
-            elif speaker in val_speakers:
-                val_samples.append(s)
-            else:
-                test_samples.append(s)
-        print(f"  CREMA-D 划分: {len(train_speakers)} train, {len(val_speakers)} val, {len(test_speakers)} test speakers")
+    print(f"  情感类别: {num_classes} 类 — {list(emotion_to_idx.keys())}")
     
     print(f"\n  数据划分 (按 Speaker, 防止数据泄露):")
     print(f"    训练集: {len(train_samples)} 条")
@@ -892,23 +1248,35 @@ def main():
     print(f"    测试集: {len(test_samples)} 条")
 
     # 绘制情感分布
-    plot_emotion_distribution(samples, os.path.join(OUTPUT_DIR, "emotion_distribution.png"))
+    plot_emotion_distribution(
+        samples,
+        os.path.join(OUTPUT_DIR, "emotion_distribution.png"),
+        class_names=list(emotion_to_idx.keys()),
+    )
 
-    # 构建 Dataset 和 DataLoader
-    train_dataset = SpeechEmotionDataset(train_samples, augment=True)
-    val_dataset = SpeechEmotionDataset(val_samples, augment=False)
-    test_dataset = SpeechEmotionDataset(test_samples, augment=False)
+    if args.cache_features:
+        train_samples = ensure_feature_cache(train_samples, args.dataset)
+        val_samples = ensure_feature_cache(val_samples, args.dataset)
+        test_samples = ensure_feature_cache(test_samples, args.dataset)
 
+    train_dataset, val_dataset, test_dataset = build_datasets_from_samples(
+        train_samples, val_samples, test_samples, use_cache=args.cache_features
+    )
+
+    train_sample_weights = build_sample_weights(train_samples)
+    train_sampler = WeightedRandomSampler(
+        train_sample_weights, num_samples=len(train_sample_weights), replacement=True
+    )
     train_loader = DataLoader(train_dataset, batch_size=args.batch_size,
-                              shuffle=True, num_workers=4, pin_memory=True)
+                              sampler=train_sampler, num_workers=args.num_workers, pin_memory=DEVICE.type == "cuda")
     val_loader = DataLoader(val_dataset, batch_size=args.batch_size,
-                            shuffle=False, num_workers=4, pin_memory=True)
+                            shuffle=False, num_workers=args.num_workers, pin_memory=DEVICE.type == "cuda")
     test_loader = DataLoader(test_dataset, batch_size=args.batch_size,
-                             shuffle=False, num_workers=4, pin_memory=True)
+                             shuffle=False, num_workers=args.num_workers, pin_memory=DEVICE.type == "cuda")
 
     # 验证数据 shape
     sample_batch = next(iter(train_loader))
-    print(f"\n  Batch 特征 shape: {sample_batch[0].shape}  (batch, L={MAX_SEQ_LEN}, n_mels={N_MELS})")
+    print(f"\n  Batch 特征 shape: {sample_batch[0].shape}  (batch, L={MAX_SEQ_LEN}, feat_dim={FEATURE_DIM})")
     print(f"  Batch 标签 shape: {sample_batch[1].shape}")
     print(f"  Batch Mask shape: {sample_batch[2].shape}")
 
@@ -916,7 +1284,7 @@ def main():
     print(f"\n[阶段2] 构建 Transformer 编码器 + 分类头")
     print("-" * 40)
 
-    model = SpeechEmotionClassifier(input_dim=N_MELS).to(DEVICE)
+    model = SpeechEmotionClassifier(input_dim=FEATURE_DIM, num_classes=num_classes).to(DEVICE)
     print(model)
 
     total_params = sum(p.numel() for p in model.parameters())
@@ -929,33 +1297,37 @@ def main():
     print(f"\n[阶段3] 模型训练与评估")
     print("-" * 40)
 
+    amp_enabled, scaler_enabled = resolve_amp_settings(DEVICE)
+    scaler = torch.cuda.amp.GradScaler(enabled=scaler_enabled)
+
     # 计算类别权重（处理类别不均衡）
     train_labels = [s["emotion_idx"] for s in train_samples]
-    class_counts = np.bincount(train_labels, minlength=NUM_CLASSES).astype(float)
+    class_counts = np.bincount(train_labels, minlength=num_classes).astype(float)
     class_weights = 1.0 / (class_counts + 1e-6)
-    class_weights = class_weights / class_weights.sum() * NUM_CLASSES
+    class_weights = class_weights / class_weights.sum() * num_classes
     class_weights_tensor = torch.FloatTensor(class_weights).to(DEVICE)
 
-    criterion = nn.CrossEntropyLoss(weight=class_weights_tensor)
+    criterion = nn.CrossEntropyLoss(weight=class_weights_tensor, label_smoothing=0.1)
     optimizer = optim.AdamW(model.parameters(), lr=args.lr, weight_decay=WEIGHT_DECAY)
-    scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.epochs, eta_min=1e-6)
+    scheduler = build_lr_scheduler(optimizer, total_epochs=args.epochs, warmup_epochs=5)
 
     print(f"  优化器: AdamW  学习率: {args.lr}  权重衰减: {WEIGHT_DECAY}")
-    print(f"  损失函数: CrossEntropyLoss (加权)")
-    print(f"  训练轮数: {args.epochs}  批大小: {args.batch_size}")
+    print(f"  损失函数: CrossEntropyLoss (加权 + label smoothing)")
+    print(f"  训练轮数: {args.epochs}  批大小: {args.batch_size}  workers: {args.num_workers}")
     print(f"  类别权重: {class_weights.round(2).tolist()}")
 
     train_losses, val_losses = [], []
     train_accs, val_accs = [], []
     best_val_acc = 0.0
-    patience = 15
+    patience = 20
     patience_counter = 0
 
     for epoch in range(1, args.epochs + 1):
         train_loss, train_acc = train_one_epoch(
-            model, train_loader, criterion, optimizer, scheduler, DEVICE, epoch
+            model, train_loader, criterion, optimizer, scheduler, DEVICE, epoch,
+            amp_enabled=amp_enabled, scaler=scaler,
         )
-        val_loss, val_acc, _, _ = evaluate(model, val_loader, criterion, DEVICE)
+        val_loss, val_acc, _, _ = evaluate(model, val_loader, criterion, DEVICE, amp_enabled=amp_enabled)
 
         current_lr = scheduler.get_last_lr()[0]
         train_losses.append(train_loss)
@@ -986,20 +1358,20 @@ def main():
     print(f"\n  最佳验证准确率: {best_val_acc:.4f}")
 
     # === 测试集最终评估 ===
-    print(f"\n[最终评估] 测试集 (未见过的 Actor 21-24)")
+    print(f"\n[最终评估] 测试集")
     print("-" * 40)
 
     model.load_state_dict(torch.load(
         os.path.join(OUTPUT_DIR, "best_model.pth"), map_location=DEVICE, weights_only=True
     ))
-    test_loss, test_acc, test_preds, test_labels = evaluate(model, test_loader, criterion, DEVICE)
+    test_loss, test_acc, test_preds, test_labels = evaluate(model, test_loader, criterion, DEVICE, amp_enabled=amp_enabled)
 
     print(f"  测试 Loss: {test_loss:.4f}")
     print(f"  测试 Accuracy: {test_acc:.4f}")
 
-    target_names = [IDX_TO_EMOTION[i] for i in range(NUM_CLASSES)]
+    target_names = [idx_to_emotion[i] for i in range(num_classes)]
     print(f"\n  分类报告:")
-    print(classification_report(test_labels, test_preds, target_names=target_names))
+    print(classification_report(test_labels, test_preds, labels=list(range(num_classes)), target_names=target_names))
 
     # === 可视化 ===
     print("[可视化] 生成图表...")
@@ -1010,19 +1382,20 @@ def main():
     plot_confusion_matrix(
         test_labels, test_preds,
         os.path.join(OUTPUT_DIR, "confusion_matrix.png"),
+        class_names=target_names,
     )
 
     # === 保存最终模型 ===
     torch.save({
         "model_state_dict": model.state_dict(),
         "config": {
-            "input_dim": N_MELS, "d_model": D_MODEL, "nhead": NHEAD,
+            "input_dim": FEATURE_DIM, "d_model": D_MODEL, "nhead": NHEAD,
             "num_layers": NUM_ENCODER_LAYERS, "dim_feedforward": DIM_FEEDFORWARD,
-            "dropout": DROPOUT, "num_classes": NUM_CLASSES,
+            "dropout": DROPOUT, "num_classes": num_classes,
             "max_seq_len": MAX_SEQ_LEN, "sample_rate": SAMPLE_RATE,
             "n_mels": N_MELS,
         },
-        "emotion_map": IDX_TO_EMOTION,
+        "emotion_map": idx_to_emotion,
         "best_val_acc": best_val_acc,
         "test_acc": test_acc,
     }, os.path.join(OUTPUT_DIR, "model_complete.pth"))

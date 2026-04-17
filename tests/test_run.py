@@ -19,6 +19,22 @@ class RunArgParsingTests(unittest.TestCase):
 
         self.assertEqual(args.command, "webui")
 
+    def test_train_passthrough_strips_separator(self):
+        run = load_run_module(self)
+
+        args = run.parse_args(["train", "--", "--epochs", "1"])
+
+        self.assertEqual(args.command, "train")
+        self.assertEqual(args.extra_args, ["--epochs", "1"])
+
+    def test_train_passthrough_keeps_dataset_and_cache_flags(self):
+        run = load_run_module(self)
+
+        args = run.parse_args(["train", "--", "--dataset", "tess", "--cache-features"])
+
+        self.assertEqual(args.command, "train")
+        self.assertEqual(args.extra_args, ["--dataset", "tess", "--cache-features"])
+
 
 class RunEnvironmentPathTests(unittest.TestCase):
     def test_linux_venv_python_path(self):
