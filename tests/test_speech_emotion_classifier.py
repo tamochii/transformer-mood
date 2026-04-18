@@ -285,14 +285,15 @@ class AdditionalDatasetScanTests(unittest.TestCase):
 
 
 class TessOnlyTrainingTests(unittest.TestCase):
-    def test_build_tess_label_mapping_uses_seven_real_classes(self):
+    def test_build_tess_label_mapping_uses_six_vec_classes(self):
         emotion_to_idx, idx_to_emotion = sec.build_label_space("tess")
 
         self.assertEqual(
             list(emotion_to_idx.keys()),
-            ["angry", "disgust", "fearful", "happy", "neutral", "sad", "surprised"],
+            ["angry", "disgust", "fearful", "happy", "neutral", "sad"],
         )
-        self.assertEqual(len(idx_to_emotion), 7)
+        self.assertNotIn("surprised", emotion_to_idx)
+        self.assertEqual(len(idx_to_emotion), 6)
 
     def test_split_tess_samples_is_deterministic_and_non_empty(self):
         samples = []
@@ -320,7 +321,7 @@ class TessOnlyTrainingTests(unittest.TestCase):
     def test_build_cache_path_uses_tess_mode_and_feature_dim(self):
         cache_dir = sec.build_feature_cache_dir("tess")
 
-        self.assertTrue(str(cache_dir).endswith(f"output/cache/tess_7class_fd{sec.FEATURE_DIM}"))
+        self.assertTrue(str(cache_dir).endswith(f"output/cache/tess_vec_6class_fd{sec.FEATURE_DIM}"))
 
     def test_cached_feature_dataset_loads_saved_tensor_without_audio_decode(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -343,21 +344,95 @@ class TessOnlyTrainingTests(unittest.TestCase):
 
     def test_prepare_training_samples_returns_tess_only_when_requested(self):
         fake_samples = [
-            {"filepath": "a.wav", "emotion_name": "happy", "emotion_idx": 3, "speaker": "OAF"},
-            {"filepath": "b.wav", "emotion_name": "happy", "emotion_idx": 3, "speaker": "OAF"},
-            {"filepath": "c.wav", "emotion_name": "happy", "emotion_idx": 3, "speaker": "YAF"},
+            {"filepath": "anger/a.wav", "emotion_name": "angry", "speaker": "OAF", "group_id": "g1"},
+            {"filepath": "happy/b.wav", "emotion_name": "happy", "speaker": "OAF", "group_id": "g2"},
+            {"filepath": "neutral/c.wav", "emotion_name": "neutral", "speaker": "YAF", "group_id": "g3"},
+            {"filepath": "sad/d.wav", "emotion_name": "sad", "speaker": "YAF", "group_id": "g4"},
+            {"filepath": "fear/e.wav", "emotion_name": "fearful", "speaker": "YAF", "group_id": "g5"},
         ]
-        with patch.object(sec, "scan_tess_dataset", return_value=fake_samples):
+        with patch.object(sec, "scan_vec_dataset", return_value=fake_samples) as scan_mock, patch.object(
+            sec, "scan_tess_dataset", side_effect=AssertionError("legacy tess scanner should not be used")
+        ):
             train_samples, val_samples, test_samples, emotion_to_idx, idx_to_emotion = sec.prepare_training_samples(
                 "tess"
             )
 
-        self.assertEqual(len(train_samples) + len(val_samples) + len(test_samples), 3)
+        scan_mock.assert_called_once_with(sec.VEC_DATA_DIR)
+        self.assertEqual(len(train_samples) + len(val_samples) + len(test_samples), 5)
         self.assertEqual(
             list(emotion_to_idx.keys()),
-            ["angry", "disgust", "fearful", "happy", "neutral", "sad", "surprised"],
+            ["angry", "disgust", "fearful", "happy", "neutral", "sad"],
         )
-        self.assertEqual(idx_to_emotion[3], "happy")
+        self.assertEqual(idx_to_emotion[2], "fearful")
+
+
+class VecBackedTessTests(unittest.TestCase):
+    def test_scan_vec_dataset_maps_directory_names_and_speakers(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            for relative in [
+                "anger/OAF_back_angry.wav",
+                "fear/1001_IEO_FEA_XX.wav",
+                "happy/03-01-03-01-01-01-19.wav",
+            ]:
+                path = root / relative
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.touch()
+
+            samples = sec.scan_vec_dataset(str(root))
+
+        by_name = {Path(sample["filepath"]).name: sample for sample in samples}
+        self.assertEqual(by_name["OAF_back_angry.wav"]["emotion_name"], "angry")
+        self.assertEqual(by_name["OAF_back_angry.wav"]["speaker"], "OAF")
+        self.assertEqual(by_name["1001_IEO_FEA_XX.wav"]["emotion_name"], "fearful")
+        self.assertEqual(by_name["1001_IEO_FEA_XX.wav"]["speaker"], "1001")
+        self.assertEqual(by_name["03-01-03-01-01-01-19.wav"]["speaker"], "19")
+
+    def test_vec_group_id_strips_augmentation_suffix(self):
+        base = sec.build_vec_group_id("/tmp/anger/YAF_white_angry.wav")
+        aug = sec.build_vec_group_id("/tmp/anger/YAF_white_angry_aug3.wav")
+
+        self.assertEqual(base, aug)
+
+    def test_split_tess_samples_keeps_augmented_group_together(self):
+        samples = [
+            {"filepath": "s1_g1.wav", "emotion_name": "happy", "emotion_idx": 3, "speaker": "OAF", "group_id": "g1"},
+            {"filepath": "s1_g1_aug2.wav", "emotion_name": "happy", "emotion_idx": 3, "speaker": "OAF", "group_id": "g1"},
+            {"filepath": "s1_g2.wav", "emotion_name": "happy", "emotion_idx": 3, "speaker": "OAF", "group_id": "g2"},
+            {"filepath": "s1_g3.wav", "emotion_name": "happy", "emotion_idx": 3, "speaker": "OAF", "group_id": "g3"},
+            {"filepath": "s1_g4.wav", "emotion_name": "happy", "emotion_idx": 3, "speaker": "OAF", "group_id": "g4"},
+        ]
+
+        train_samples, val_samples, test_samples = sec.split_tess_samples(samples)
+
+        buckets = {
+            "train": {sample["filepath"] for sample in train_samples},
+            "val": {sample["filepath"] for sample in val_samples},
+            "test": {sample["filepath"] for sample in test_samples},
+        }
+        placements = [name for name, paths in buckets.items() if {"s1_g1.wav", "s1_g1_aug2.wav"} & paths]
+        self.assertEqual(len(placements), 1)
+        self.assertTrue({"s1_g1.wav", "s1_g1_aug2.wav"}.issubset(buckets[placements[0]]))
+
+    def test_split_tess_samples_keeps_three_splits_non_empty(self):
+        samples = []
+        for speaker in ["OAF", "YAF"]:
+            for index in range(5):
+                samples.append(
+                    {
+                        "filepath": f"{speaker}_group_{index}.wav",
+                        "emotion_name": "happy",
+                        "emotion_idx": 3,
+                        "speaker": speaker,
+                        "group_id": f"group_{index}",
+                    }
+                )
+
+        train_samples, val_samples, test_samples = sec.split_tess_samples(samples)
+
+        self.assertTrue(train_samples)
+        self.assertTrue(val_samples)
+        self.assertTrue(test_samples)
 
     def test_create_training_components_uses_cached_dataset_when_enabled(self):
         samples = [{"cache_path": Path("/tmp/fake.pt"), "emotion_idx": 1}]

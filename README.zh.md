@@ -87,7 +87,19 @@ data/ravdess/
 
 ```bash
 python run.py train
+python run.py train -- --dataset tess
 ```
+
+`--dataset tess` 会保留旧的命令行参数名，但训练时实际读取 `data/vec/`，不再使用 `data/tess/`。
+
+当前这个 vec 驱动的 `tess` 模式为 6 类：
+
+- angry
+- disgust
+- fearful
+- happy
+- neutral
+- sad
 
 ## CLI 推理
 

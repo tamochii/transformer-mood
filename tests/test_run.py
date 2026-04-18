@@ -104,6 +104,20 @@ class RunValidationTests(unittest.TestCase):
         self.assertTrue(result.errors)
         self.assertIn("data/ravdess", result.errors[0])
 
+    def test_train_requires_vec_directory_when_tess_dataset_requested(self):
+        run = load_run_module(self)
+
+        result = run.validate_command_requirements(
+            command="train",
+            repo_root=self.repo_root,
+            explicit_model=None,
+            ffmpeg_path="/usr/bin/ffmpeg",
+            train_args=["--dataset", "tess"],
+        )
+
+        self.assertTrue(result.errors)
+        self.assertIn("data/vec", result.errors[0])
+
     def test_webui_dispatch_uses_resolved_default_model_path(self):
         run = load_run_module(self)
         model_path = self.repo_root / "output" / "model_complete.pth"

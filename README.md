@@ -87,7 +87,19 @@ See `data/README.md` for details.
 
 ```bash
 python run.py train
+python run.py train -- --dataset tess
 ```
+
+`--dataset tess` keeps the old CLI name, but now reads training audio from `data/vec/` instead of `data/tess/`.
+
+The vec-backed `tess` mode uses 6 classes:
+
+- angry
+- disgust
+- fearful
+- happy
+- neutral
+- sad
 
 ## CLI Prediction
 

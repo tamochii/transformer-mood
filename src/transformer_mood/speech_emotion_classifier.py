@@ -24,6 +24,7 @@ import sys
 import math
 import argparse
 import random
+import re
 from pathlib import Path
 import numpy as np
 import torch
@@ -74,6 +75,7 @@ DATA_DIR = str(PROJECT_ROOT / "data" / "ravdess")
 CREMA_DATA_ROOT = str(PROJECT_ROOT / "data" / "cremad")
 SAVEE_DATA_DIR = str(PROJECT_ROOT / "data" / "savee")
 TESS_DATA_DIR = str(PROJECT_ROOT / "data" / "tess")
+VEC_DATA_DIR = str(PROJECT_ROOT / "data" / "vec")
 OUTPUT_DIR = str(PROJECT_ROOT / "output")
 
 # RAVDESS 情感标签映射（文件名第3段）
@@ -130,8 +132,18 @@ TESS_ONLY_EMOTIONS = {
     "happy": "happy",
     "neutral": "neutral",
     "sad": "sad",
-    "surprised": "surprised",
 }
+
+VEC_EMOTIONS = {
+    "anger": "angry",
+    "disgust": "disgust",
+    "fear": "fearful",
+    "happy": "happy",
+    "neutral": "neutral",
+    "sad": "sad",
+}
+
+AUGMENTED_SUFFIX_RE = re.compile(r"_aug\d+$")
 
 # 使用全部 8 类情感
 EMOTION_TO_IDX = {name: idx for idx, name in enumerate(RAVDESS_EMOTIONS.values())}
@@ -245,6 +257,30 @@ def parse_tess_filename(filepath: str) -> dict:
     }
 
 
+def strip_augmented_suffix(filepath: str) -> str:
+    """移除 vec 文件名中的增强后缀，便于做 speaker/group 解析。"""
+    return AUGMENTED_SUFFIX_RE.sub("", Path(filepath).stem)
+
+
+def parse_vec_speaker(filepath: str) -> str:
+    """兼容 TESS / CREMA-D / RAVDESS 风格的 speaker 解析。"""
+    stem = strip_augmented_suffix(filepath)
+    if stem.startswith(("OAF_", "YAF_")):
+        return stem.split("_", 1)[0]
+    if re.match(r"^\d+_", stem):
+        return stem.split("_", 1)[0]
+    if re.match(r"^(\d{2}-){6}\d{2}$", stem):
+        return stem.split("-")[-1]
+    if "_" in stem:
+        return stem.split("_", 1)[0]
+    return stem
+
+
+def build_vec_group_id(filepath: str) -> str:
+    """对原始样本和 *_augN.wav 生成相同分组键。"""
+    return strip_augmented_suffix(filepath)
+
+
 def load_audio(filepath: str, target_sr: int = SAMPLE_RATE) -> torch.Tensor:
     """
     加载音频文件并重采样到目标采样率。
@@ -319,7 +355,7 @@ def build_feature_sequence(mel_spec: torch.Tensor) -> torch.Tensor:
 def build_feature_cache_dir(dataset_name: str) -> Path:
     """返回特征缓存目录。"""
     if dataset_name == "tess":
-        return Path(OUTPUT_DIR) / "cache" / f"tess_7class_fd{FEATURE_DIM}"
+        return Path(OUTPUT_DIR) / "cache" / f"tess_vec_6class_fd{FEATURE_DIM}"
     return Path(OUTPUT_DIR) / "cache" / f"{dataset_name}_fd{FEATURE_DIM}"
 
 
@@ -495,6 +531,31 @@ def scan_tess_dataset(data_dir: str) -> list:
                     "emotion_idx": EMOTION_TO_IDX[emotion_name],
                     "speaker": meta["speaker"],
                 })
+    return samples
+
+
+def scan_vec_dataset(data_dir: str) -> list:
+    """扫描 vec 目录并统一为 tess 模式所需的样本结构。"""
+    samples = []
+    if not os.path.isdir(data_dir):
+        return samples
+    for emotion_dir in sorted(os.listdir(data_dir)):
+        emotion_path = os.path.join(data_dir, emotion_dir)
+        if not os.path.isdir(emotion_path):
+            continue
+        emotion_name = VEC_EMOTIONS.get(emotion_dir.lower())
+        if emotion_name is None:
+            continue
+        for wav_file in sorted(os.listdir(emotion_path)):
+            if not wav_file.endswith(".wav"):
+                continue
+            filepath = os.path.join(emotion_path, wav_file)
+            samples.append({
+                "filepath": filepath,
+                "emotion_name": emotion_name,
+                "speaker": parse_vec_speaker(filepath),
+                "group_id": build_vec_group_id(filepath),
+            })
     return samples
 
 
@@ -1109,22 +1170,32 @@ def split_by_sorted_speakers(samples: list, train_ratio: float = 0.7, val_ratio:
 
 
 def split_tess_samples(samples: list):
-    """按 speaker 和情感做稳定切分，保证 train/val/test 非空。"""
+    """按 speaker + group_id 稳定切分，避免增强样本泄露。"""
     grouped = {}
     for sample in samples:
-        grouped.setdefault(sample["speaker"], []).append(sample)
+        speaker_groups = grouped.setdefault(sample["speaker"], {})
+        group_id = sample.get("group_id") or build_vec_group_id(sample["filepath"])
+        speaker_groups.setdefault(group_id, []).append(sample)
 
     train_samples, val_samples, test_samples = [], [], []
     for speaker in sorted(grouped):
-        speaker_samples = sorted(grouped[speaker], key=lambda item: item["filepath"])
-        emotion_ids = sorted({item["emotion_idx"] for item in speaker_samples})
-        for emotion_idx in emotion_ids:
-            emotion_samples = [item for item in speaker_samples if item["emotion_idx"] == emotion_idx]
-            train_cut = max(1, int(len(emotion_samples) * 0.6))
-            val_cut = max(train_cut + 1, int(len(emotion_samples) * 0.8))
-            train_samples.extend(emotion_samples[:train_cut])
-            val_samples.extend(emotion_samples[train_cut:val_cut])
-            test_samples.extend(emotion_samples[val_cut:])
+        grouped_samples = [
+            sorted(group, key=lambda item: item["filepath"])
+            for _, group in sorted(grouped[speaker].items())
+        ]
+        group_count = len(grouped_samples)
+        if group_count == 1:
+            train_groups, val_groups, test_groups = grouped_samples, [], []
+        else:
+            train_end = max(1, int(group_count * 0.6))
+            val_end = max(train_end + 1, int(group_count * 0.8))
+            val_end = min(val_end, group_count - 1)
+            train_groups = grouped_samples[:train_end]
+            val_groups = grouped_samples[train_end:val_end]
+            test_groups = grouped_samples[val_end:]
+        train_samples.extend(sample for group in train_groups for sample in group)
+        val_samples.extend(sample for group in val_groups for sample in group)
+        test_samples.extend(sample for group in test_groups for sample in group)
     return train_samples, val_samples, test_samples
 
 
@@ -1133,7 +1204,7 @@ def prepare_training_samples(dataset_name: str):
     emotion_to_idx, idx_to_emotion = build_label_space(dataset_name)
     if dataset_name == "tess":
         tess_samples = []
-        for sample in scan_tess_dataset(TESS_DATA_DIR):
+        for sample in scan_vec_dataset(VEC_DATA_DIR):
             if sample["emotion_name"] not in emotion_to_idx:
                 continue
             tess_samples.append({
@@ -1216,7 +1287,7 @@ def main():
     parser.add_argument("--num_workers", type=int, default=NUM_WORKERS,
                         help=f"DataLoader worker 数 (默认: {NUM_WORKERS})")
     parser.add_argument("--dataset", type=str, default="multi", choices=["multi", "tess"],
-                        help="训练数据范围: multi=多数据集, tess=TESS-only 7类")
+                        help="训练数据范围: multi=多数据集, tess=vec 6类兼容模式")
     parser.add_argument("--cache-features", action="store_true",
                         help="训练前预缓存特征，减少每个 epoch 的 CPU 预处理开销")
     parser.add_argument("--lr", type=float, default=LEARNING_RATE,
@@ -1263,11 +1334,15 @@ def main():
         print(f"[ERROR] 数据目录不存在: {DATA_DIR}")
         print("请先下载 RAVDESS 数据集并解压到 data/ravdess/ 目录")
         sys.exit(1)
+    if args.dataset == "tess" and not os.path.isdir(VEC_DATA_DIR):
+        print(f"[ERROR] 数据目录不存在: {VEC_DATA_DIR}")
+        print("请先将 vec 数据集放到 data/vec/ 目录")
+        sys.exit(1)
 
     train_samples, val_samples, test_samples, emotion_to_idx, idx_to_emotion = prepare_training_samples(args.dataset)
     num_classes = len(emotion_to_idx)
     samples = train_samples + val_samples + test_samples
-    print(f"  模式: {'TESS-only 7类' if args.dataset == 'tess' else 'Multi-Dataset'}")
+    print(f"  模式: {'tess 参数 / vec 数据 / 6类' if args.dataset == 'tess' else 'Multi-Dataset'}")
     print(f"  总计 {len(samples)} 条语音样本")
     print(f"  情感类别: {num_classes} 类 — {list(emotion_to_idx.keys())}")
     

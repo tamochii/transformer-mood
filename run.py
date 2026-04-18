@@ -68,11 +68,24 @@ def resolve_model_path(repo_root: Path, explicit_model: str | None) -> Path:
     return repo_root / "output" / "best_model.pth"
 
 
+def resolve_train_dataset_path(repo_root: Path, train_args: list[str] | None = None) -> tuple[Path, str]:
+    requested_dataset = "multi"
+    args = list(train_args or [])
+    for index, value in enumerate(args[:-1]):
+        if value == "--dataset":
+            requested_dataset = args[index + 1]
+            break
+    if requested_dataset == "tess":
+        return repo_root / "data" / "vec", "Place vec data under data/vec/ for --dataset tess."
+    return repo_root / "data" / "ravdess", "Place RAVDESS under data/ravdess/."
+
+
 def validate_command_requirements(
     command: str,
     repo_root: Path,
     explicit_model: str | None,
     ffmpeg_path: str | None,
+    train_args: list[str] | None = None,
 ) -> ValidationResult:
     result = ValidationResult(ffmpeg_path=ffmpeg_path)
 
@@ -86,10 +99,10 @@ def validate_command_requirements(
                 result.warnings.append(message)
 
     if command == "train":
-        result.dataset_path = repo_root / "data" / "ravdess"
+        result.dataset_path, dataset_hint = resolve_train_dataset_path(repo_root, train_args)
         if not result.dataset_path.is_dir():
             result.errors.append(
-                f"Dataset not found: {result.dataset_path}. Place RAVDESS under data/ravdess/."
+                f"Dataset not found: {result.dataset_path}. {dataset_hint}"
             )
 
     if command in {"webui", "predict"} and ffmpeg_path is None:
@@ -166,6 +179,7 @@ def print_doctor_report(
     print(f"[INFO] model: {resolve_model_path(repo_root, None)}")
     print(f"[INFO] model exists: {resolve_model_path(repo_root, None).exists()}")
     print(f"[INFO] dataset exists: {(repo_root / 'data' / 'ravdess').is_dir()}")
+    print(f"[INFO] vec dataset exists: {(repo_root / 'data' / 'vec').is_dir()}")
     print(
         f"[INFO] CREMA-D dataset exists: "
         f"{((repo_root / 'data' / 'cremad' / 'AudioWAV').is_dir() or (repo_root / 'data' / 'cremad').is_dir())}"
@@ -179,6 +193,14 @@ def dispatch_command(args: argparse.Namespace, repo_root: Path, venv_python: Pat
     command = args.command
     explicit_model = getattr(args, "model", None)
     validation = validate_command_requirements(command, repo_root, explicit_model, ffmpeg_path)
+    if command == "train":
+        validation = validate_command_requirements(
+            command,
+            repo_root,
+            explicit_model,
+            ffmpeg_path,
+            train_args=getattr(args, "extra_args", None),
+        )
     print_validation(validation)
     if validation.errors:
         return 1
