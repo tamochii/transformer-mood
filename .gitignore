@@ -16,6 +16,7 @@ data/ravdess/
 data/cremad/
 data/savee/
 data/tess/
+data/vec/
 
 # Legacy root-level artifacts
 /best_model.pth
